@@ -42,25 +42,28 @@ class MainActivity : AppCompatActivity() {
     private var tts: OfflineTts? = null
 
     private var generatedSamples: FloatArray? = null
-    private var generatedSampleRate: Int = 22050
+    private var generatedSampleRate = 22050
 
     private var audioTrack: AudioTrack? = null
 
-    private val executor = Executors.newSingleThreadExecutor()
+    private val executor =
+        Executors.newSingleThreadExecutor()
 
     @Volatile
     private var generating = false
 
-    override fun onCreate(savedInstanceState: Bundle?) {
+    override fun onCreate(
+        savedInstanceState: Bundle?
+    ) {
         super.onCreate(savedInstanceState)
 
-        setContentView(R.layout.activity_main)
+        setContentView(
+            R.layout.activity_main
+        )
 
         initializeViews()
         initializeTextCounter()
         initializeSpeed()
-
-        initializeTts()
 
         generateButton.setOnClickListener {
             generateSpeech()
@@ -81,21 +84,40 @@ class MainActivity : AppCompatActivity() {
         copyButton.setOnClickListener {
             copyText()
         }
+
+        initializeTts()
     }
 
     private fun initializeViews() {
 
-        textInput = findViewById(R.id.textInput)
-        characterCount = findViewById(R.id.characterCount)
-        speedLabel = findViewById(R.id.speedLabel)
-        statusText = findViewById(R.id.statusText)
+        textInput =
+            findViewById(R.id.textInput)
 
-        generateButton = findViewById(R.id.generateButton)
-        playButton = findViewById(R.id.playButton)
-        stopButton = findViewById(R.id.stopButton)
-        saveButton = findViewById(R.id.saveButton)
-        copyButton = findViewById(R.id.copyButton)
+        characterCount =
+            findViewById(R.id.characterCount)
 
+        speedLabel =
+            findViewById(R.id.speedLabel)
+
+        statusText =
+            findViewById(R.id.statusText)
+
+        generateButton =
+            findViewById(R.id.generateButton)
+
+        playButton =
+            findViewById(R.id.playButton)
+
+        stopButton =
+            findViewById(R.id.stopButton)
+
+        saveButton =
+            findViewById(R.id.saveButton)
+
+        copyButton =
+            findViewById(R.id.copyButton)
+
+        generateButton.isEnabled = false
         playButton.isEnabled = false
         saveButton.isEnabled = false
     }
@@ -129,29 +151,32 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         )
+
+        characterCount.text =
+            "${textInput.text.length} / 5000"
     }
 
     private fun initializeSpeed() {
 
         val seekBar =
-            findViewById<SeekBar>(R.id.speedSeekBar)
+            findViewById<SeekBar>(
+                R.id.speedSeekBar
+            )
+
+        seekBar.progress = 50
+
+        updateSpeedLabel(50)
 
         seekBar.setOnSeekBarChangeListener(
-            object : SeekBar.OnSeekBarChangeListener {
+            object :
+                SeekBar.OnSeekBarChangeListener {
 
                 override fun onProgressChanged(
                     seekBar: SeekBar?,
                     progress: Int,
                     fromUser: Boolean
                 ) {
-                    val speed =
-                        0.50f + progress / 100f
-
-                    speedLabel.text =
-                        String.format(
-                            "Speed: %.2fx",
-                            speed
-                        )
+                    updateSpeedLabel(progress)
                 }
 
                 override fun onStartTrackingTouch(
@@ -167,6 +192,21 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
+    private fun updateSpeedLabel(
+        progress: Int
+    ) {
+
+        val speed =
+            0.50f +
+                progress / 100f
+
+        speedLabel.text =
+            String.format(
+                "Speed: %.2fx",
+                speed
+            )
+    }
+
     private fun getSpeed(): Float {
 
         val progress =
@@ -174,7 +214,8 @@ class MainActivity : AppCompatActivity() {
                 R.id.speedSeekBar
             ).progress
 
-        return 0.50f + progress / 100f
+        return 0.50f +
+            progress / 100f
     }
 
     private fun initializeTts() {
@@ -190,11 +231,6 @@ class MainActivity : AppCompatActivity() {
 
             try {
 
-                /*
-                 * Check the required assets before
-                 * creating the sherpa-onnx engine.
-                 */
-
                 val modelPath =
                     "ryan/en_US-ryan-medium.onnx"
 
@@ -204,27 +240,13 @@ class MainActivity : AppCompatActivity() {
                 val dataPath =
                     "ryan/espeak-ng-data"
 
-                if (!assetExists(modelPath)) {
-                    throw IOException(
-                        "Missing model asset:\n$modelPath"
-                    )
-                }
-
-                if (!assetExists(tokensPath)) {
-                    throw IOException(
-                        "Missing tokens asset:\n$tokensPath"
-                    )
-                }
-
-                if (!assetExists(dataPath)) {
-                    throw IOException(
-                        "Missing eSpeak NG data:\n$dataPath"
-                    )
-                }
+                verifyAsset(modelPath)
+                verifyAsset(tokensPath)
+                verifyAsset(dataPath)
 
                 runOnUiThread {
                     statusText.text =
-                        "Model files found\nLoading Ryan Medium..."
+                        "Loading Ryan Medium..."
                 }
 
                 val vitsConfig =
@@ -241,7 +263,7 @@ class MainActivity : AppCompatActivity() {
                     OfflineTtsModelConfig(
                         vits = vitsConfig,
                         numThreads = 2,
-                        debug = true,
+                        debug = false,
                         provider = "cpu"
                     )
 
@@ -250,43 +272,47 @@ class MainActivity : AppCompatActivity() {
                         model = modelConfig
                     )
 
-                runOnUiThread {
-                    statusText.text =
-                        "Starting Piper TTS engine..."
-                }
-
                 val engine =
                     OfflineTts(
                         assets,
                         config
                     )
 
+                val sampleRate =
+                    engine.sampleRate()
+
                 tts = engine
 
                 generatedSampleRate =
-                    engine.sampleRate()
+                    sampleRate
 
                 runOnUiThread {
 
                     statusText.text =
-                        "Ready • Ryan Medium • ${generatedSampleRate} Hz"
+                        "Ready • Ryan Medium • ${sampleRate} Hz"
 
-                    generateButton.isEnabled = true
+                    generateButton.isEnabled =
+                        true
                 }
 
             } catch (e: Throwable) {
 
-                val errorText =
-                    buildErrorMessage(e)
+                val message =
+                    getErrorMessage(e)
 
                 runOnUiThread {
 
                     statusText.text =
-                        errorText
+                        "Piper TTS failed\n\n$message"
 
-                    generateButton.isEnabled = false
-                    playButton.isEnabled = false
-                    saveButton.isEnabled = false
+                    generateButton.isEnabled =
+                        false
+
+                    playButton.isEnabled =
+                        false
+
+                    saveButton.isEnabled =
+                        false
 
                     Toast.makeText(
                         this,
@@ -298,53 +324,58 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun assetExists(path: String): Boolean {
+    private fun verifyAsset(
+        path: String
+    ) {
 
-        return try {
+        try {
 
             assets.open(path).use {
-                true
+                return
             }
 
-        } catch (_: Exception) {
+        } catch (_: IOException) {
+        }
 
-            try {
+        try {
 
-                assets.list(path)?.isNotEmpty() == true
+            val children =
+                assets.list(path)
 
-            } catch (_: Exception) {
-
-                false
+            if (
+                children == null ||
+                children.isEmpty()
+            ) {
+                throw IOException(
+                    "Missing asset: $path"
+                )
             }
+
+        } catch (e: Exception) {
+
+            throw IOException(
+                "Missing asset: $path",
+                e
+            )
         }
     }
 
-    private fun buildErrorMessage(
+    private fun getErrorMessage(
         throwable: Throwable
     ): String {
 
-        val builder =
+        val result =
             StringBuilder()
 
-        builder.append(
-            "PIPER TTS ERROR\n\n"
+        result.append(
+            throwable.javaClass.simpleName
         )
 
-        builder.append(
-            "Type:\n"
-        )
+        result.append("\n")
 
-        builder.append(
-            throwable.javaClass.name
-        )
-
-        builder.append(
-            "\n\nMessage:\n"
-        )
-
-        builder.append(
+        result.append(
             throwable.message
-                ?: "No error message"
+                ?: "Unknown error"
         )
 
         var cause =
@@ -354,24 +385,24 @@ class MainActivity : AppCompatActivity() {
 
         while (
             cause != null &&
-            count < 5
+            count < 3
         ) {
 
-            builder.append(
-                "\n\nCaused by:\n"
+            result.append(
+                "\n\nCaused by: "
             )
 
-            builder.append(
-                cause.javaClass.name
+            result.append(
+                cause.javaClass.simpleName
             )
 
-            builder.append(
+            result.append(
                 "\n"
             )
 
-            builder.append(
+            result.append(
                 cause.message
-                    ?: "No message"
+                    ?: "Unknown cause"
             )
 
             cause =
@@ -380,12 +411,26 @@ class MainActivity : AppCompatActivity() {
             count++
         }
 
-        return builder.toString()
+        return result.toString()
     }
 
     private fun generateSpeech() {
 
         if (generating) {
+            return
+        }
+
+        val engine =
+            tts
+
+        if (engine == null) {
+
+            Toast.makeText(
+                this,
+                "Piper TTS is still loading",
+                Toast.LENGTH_SHORT
+            ).show()
+
             return
         }
 
@@ -405,20 +450,6 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        val engine =
-            tts
-
-        if (engine == null) {
-
-            Toast.makeText(
-                this,
-                "TTS engine is not loaded",
-                Toast.LENGTH_SHORT
-            ).show()
-
-            return
-        }
-
         hideKeyboard()
 
         generating = true
@@ -428,7 +459,7 @@ class MainActivity : AppCompatActivity() {
         saveButton.isEnabled = false
 
         statusText.text =
-            "Generating..."
+            "Generating speech..."
 
         val speed =
             getSpeed()
@@ -437,7 +468,7 @@ class MainActivity : AppCompatActivity() {
 
             try {
 
-                val generationConfig =
+                val generation =
                     GenerationConfig(
                         silenceScale = 0.2f,
                         speed = speed,
@@ -447,7 +478,7 @@ class MainActivity : AppCompatActivity() {
                 val audio =
                     engine.generateWithConfig(
                         text,
-                        generationConfig
+                        generation
                     )
 
                 generatedSamples =
@@ -456,28 +487,34 @@ class MainActivity : AppCompatActivity() {
                 generatedSampleRate =
                     audio.sampleRate
 
+                val duration =
+                    audio.samples.size.toFloat() /
+                        audio.sampleRate
+
                 runOnUiThread {
 
                     statusText.text =
                         String.format(
                             "Ready • %.2f seconds",
-                            audio.samples.size.toFloat() /
-                                    audio.sampleRate
+                            duration
                         )
 
-                    playButton.isEnabled = true
-                    saveButton.isEnabled = true
+                    playButton.isEnabled =
+                        true
+
+                    saveButton.isEnabled =
+                        true
                 }
 
             } catch (e: Throwable) {
 
-                val errorText =
-                    buildErrorMessage(e)
+                val message =
+                    getErrorMessage(e)
 
                 runOnUiThread {
 
                     statusText.text =
-                        errorText
+                        "Generation failed\n\n$message"
 
                     Toast.makeText(
                         this,
@@ -566,7 +603,8 @@ class MainActivity : AppCompatActivity() {
         } catch (e: Throwable) {
 
             statusText.text =
-                buildErrorMessage(e)
+                "Playback failed\n\n" +
+                    getErrorMessage(e)
         }
     }
 
@@ -583,11 +621,6 @@ class MainActivity : AppCompatActivity() {
         }
 
         audioTrack = null
-
-        if (generatedSamples != null) {
-            statusText.text =
-                "Ready"
-        }
     }
 
     private fun saveAudio() {
@@ -607,6 +640,8 @@ class MainActivity : AppCompatActivity() {
         }
 
         executor.execute {
+
+            var uri: android.net.Uri? = null
 
             try {
 
@@ -629,23 +664,21 @@ class MainActivity : AppCompatActivity() {
                         put(
                             MediaStore.Downloads.RELATIVE_PATH,
                             Environment.DIRECTORY_DOWNLOADS +
-                                    "/PiperTTS"
+                                "/PiperTTS"
                         )
                     }
 
-                val resolver =
-                    contentResolver
-
-                val uri =
-                    resolver.insert(
+                uri =
+                    contentResolver.insert(
                         MediaStore.Downloads.EXTERNAL_CONTENT_URI,
                         values
                     )
                         ?: throw IOException(
-                            "Could not create file"
+                            "Could not create WAV file"
                         )
 
-                resolver.openOutputStream(uri)
+                contentResolver
+                    .openOutputStream(uri)
                     ?.use { output ->
 
                         writeWav(
@@ -654,6 +687,9 @@ class MainActivity : AppCompatActivity() {
                             generatedSampleRate
                         )
                     }
+                    ?: throw IOException(
+                        "Could not open WAV file"
+                    )
 
                 runOnUiThread {
 
@@ -666,16 +702,23 @@ class MainActivity : AppCompatActivity() {
 
             } catch (e: Throwable) {
 
+                if (uri != null) {
+
+                    try {
+                        contentResolver.delete(
+                            uri,
+                            null,
+                            null
+                        )
+                    } catch (_: Throwable) {
+                    }
+                }
+
                 runOnUiThread {
 
                     statusText.text =
-                        buildErrorMessage(e)
-
-                    Toast.makeText(
-                        this,
-                        "Save failed",
-                        Toast.LENGTH_LONG
-                    ).show()
+                        "Save failed\n\n" +
+                            getErrorMessage(e)
                 }
             }
         }
@@ -817,24 +860,22 @@ class MainActivity : AppCompatActivity() {
 
             for (i in 0 until count) {
 
+                val sample =
+                    samples[index + i]
+                        .coerceIn(-1f, 1f)
+
                 val value =
-                    (
-                        samples[index + i]
-                            .coerceIn(-1f, 1f) *
-                                32767f
-                        )
+                    (sample * 32767f)
                         .toInt()
                         .toShort()
 
                 buffer[i * 2] =
-                    (
-                        value.toInt() and 0xFF
-                    ).toByte()
+                    (value.toInt() and 0xFF)
+                        .toByte()
 
                 buffer[i * 2 + 1] =
-                    (
-                        (value.toInt() shr 8) and 0xFF
-                    ).toByte()
+                    ((value.toInt() shr 8) and 0xFF)
+                        .toByte()
             }
 
             output.write(
@@ -882,7 +923,8 @@ class MainActivity : AppCompatActivity() {
     private fun copyText() {
 
         val text =
-            textInput.text.toString()
+            textInput.text
+                .toString()
 
         if (text.isEmpty()) {
             return
