@@ -56,15 +56,15 @@ jobs:
 
       - name: Verify Piper model
         run: |
-          test -f build/piper/en_US-ryan-high.onnx
-          test -f build/piper/en_US-ryan-high.onnx.json
+          test -f build/piper/en_US-ryan-medium.onnx
+          test -f build/piper/en_US-ryan-medium.onnx.json
 
           echo "Piper model files found."
 
       - name: Prepare Piper model
         run: |
           python scripts/prepare_piper.py \
-            build/piper/en_US-ryan-high.onnx \
+            build/piper/en_US-ryan-medium.onnx \
             app/src/main/assets/ryan
 
           echo "Prepared Piper assets:"
@@ -72,7 +72,7 @@ jobs:
 
       - name: Verify prepared Piper model
         run: |
-          test -f app/src/main/assets/ryan/en_US-ryan-high.onnx
+          test -f app/src/main/assets/ryan/en_US-ryan-medium.onnx
           test -f app/src/main/assets/ryan/tokens.txt
 
           echo "Prepared Piper model verified."
@@ -204,7 +204,7 @@ jobs:
             "app/src/main/java/com/k2fsa/sherpa/onnx/Tts.kt"
 
           check_file \
-            "app/src/main/assets/ryan/en_US-ryan-high.onnx"
+            "app/src/main/assets/ryan/en_US-ryan-medium.onnx"
 
           check_file \
             "app/src/main/assets/ryan/tokens.txt"
