@@ -8,9 +8,9 @@ import android.media.MediaPlayer
 import android.os.Bundle
 import android.os.Environment
 import android.provider.MediaStore
-import android.view.View
 import android.widget.Button
 import android.widget.EditText
+import android.widget.ProgressBar
 import android.widget.SeekBar
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
@@ -23,9 +23,9 @@ import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
+import java.io.RandomAccessFile
 import java.util.Locale
 import kotlin.concurrent.thread
-
 
 class MainActivity : AppCompatActivity() {
 
@@ -33,11 +33,23 @@ class MainActivity : AppCompatActivity() {
         private const val MODEL_NAME = "en_US-ryan-high.onnx"
         private const val ASSET_ROOT = "ryan"
 
-        private const val PREPARE_VERSION = "ryan-high-v1"
+        private const val PREPARE_VERSION = "ryan-high-v3"
 
-        private const val DEFAULT_SPEED = 1.0f
-        private const val MIN_SPEED = 0.90f
-        private const val MAX_SPEED = 2.00f
+        private const val MAX_TEXT_LENGTH = 20_000
+
+        private const val MIN_SPEED = 0.80f
+        private const val MAX_SPEED = 1.50f
+
+        /*
+         * Smaller requests are more stable for long scripts
+         * while still keeping generation reasonably fast.
+         */
+        private const val MAX_CHUNK_CHARACTERS = 700
+
+        /*
+         * Lower silence scaling keeps narration tighter.
+         */
+        private const val SILENCE_SCALE = 0.80f
     }
 
     private lateinit var textInput: EditText
@@ -51,6 +63,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var saveButton: Button
     private lateinit var copyButton: Button
 
+    private lateinit var progressBar: ProgressBar
     private lateinit var statusText: TextView
 
     private var tts: OfflineTts? = null
@@ -59,7 +72,6 @@ class MainActivity : AppCompatActivity() {
 
     @Volatile
     private var isGenerating = false
-
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -71,11 +83,11 @@ class MainActivity : AppCompatActivity() {
 
         setUiEnabled(false)
 
-        statusText.text = "Preparing offline voice..."
+        statusText.text =
+            "Preparing Ryan High offline voice..."
 
         prepareTtsInBackground()
     }
-
 
     private fun initializeViews() {
 
@@ -91,17 +103,19 @@ class MainActivity : AppCompatActivity() {
         saveButton = findViewById(R.id.saveButton)
         copyButton = findViewById(R.id.copyButton)
 
+        progressBar = findViewById(R.id.progressBar)
         statusText = findViewById(R.id.statusText)
 
         updateCharacterCount()
-
         updateSpeedLabel()
 
         playButton.isEnabled = false
         stopButton.isEnabled = false
         saveButton.isEnabled = false
-    }
 
+        progressBar.visibility = ProgressBar.GONE
+        progressBar.progress = 0
+    }
 
     private fun setupListeners() {
 
@@ -132,7 +146,6 @@ class MainActivity : AppCompatActivity() {
             }
         )
 
-
         speedSeekBar.setOnSeekBarChangeListener(
             object : SeekBar.OnSeekBarChangeListener {
 
@@ -156,97 +169,87 @@ class MainActivity : AppCompatActivity() {
             }
         )
 
-
         generateButton.setOnClickListener {
             generateSpeech()
         }
-
 
         playButton.setOnClickListener {
             playGeneratedAudio()
         }
 
-
         stopButton.setOnClickListener {
             stopPlayback()
         }
 
-
         saveButton.setOnClickListener {
             saveGeneratedWav()
         }
-
 
         copyButton.setOnClickListener {
             copyText()
         }
     }
 
-
     private fun updateCharacterCount() {
 
-        val count = textInput.text?.length ?: 0
+        val count =
+            textInput.text?.length ?: 0
 
         characterCount.text =
             String.format(
                 Locale.US,
-                "%d",
-                count
+                "%,d / %,d",
+                count,
+                MAX_TEXT_LENGTH
             )
     }
 
-
     private fun updateSpeedLabel() {
-
-        val speed = getSelectedSpeed()
 
         speedLabel.text =
             String.format(
                 Locale.US,
                 "Speed  %.2fx",
-                speed
+                getSelectedSpeed()
             )
     }
-
 
     private fun getSelectedSpeed(): Float {
 
-        val progress = speedSeekBar.progress
+        val progress =
+            speedSeekBar.progress.coerceIn(0, 200)
 
-        /*
-         * SeekBar:
-         * 50  = 0.50x
-         * 100 = 1.00x
-         * 150 = 1.50x
-         *
-         * The XML currently has max=150.
-         */
-
-        return (progress.coerceIn(50, 150) / 100.0f)
-            .coerceIn(
-                MIN_SPEED,
-                MAX_SPEED
-            )
+        return MIN_SPEED +
+                (progress / 200.0f) *
+                (MAX_SPEED - MIN_SPEED)
     }
-
 
     private fun setUiEnabled(enabled: Boolean) {
 
-        generateButton.isEnabled = enabled
-        speedSeekBar.isEnabled = enabled
-        textInput.isEnabled = enabled
+        generateButton.isEnabled =
+            enabled && !isGenerating
+
+        speedSeekBar.isEnabled =
+            enabled && !isGenerating
+
+        textInput.isEnabled =
+            enabled && !isGenerating
+
         copyButton.isEnabled = true
 
         playButton.isEnabled =
-            enabled && generatedWav?.exists() == true
+            enabled &&
+                    !isGenerating &&
+                    generatedWav?.isFile == true
 
         saveButton.isEnabled =
-            enabled && generatedWav?.exists() == true
+            enabled &&
+                    !isGenerating &&
+                    generatedWav?.isFile == true
 
         stopButton.isEnabled =
             mediaPlayer?.isPlaying == true
     }
-
 
     private fun prepareTtsInBackground() {
 
@@ -293,19 +296,12 @@ class MainActivity : AppCompatActivity() {
                     )
                 }
 
+                val cpuCount =
+                    Runtime.getRuntime()
+                        .availableProcessors()
 
-                /*
-                 * IMPORTANT:
-                 *
-                 * sherpa-onnx Piper VITS requires these to be
-                 * real filesystem paths.
-                 *
-                 * Do NOT use:
-                 *
-                 * assets/ryan/...
-                 *
-                 * for model, tokens or dataDir.
-                 */
+                val threadCount =
+                    cpuCount.coerceIn(2, 6)
 
                 val vitsConfig =
                     OfflineTtsVitsModelConfig(
@@ -314,34 +310,27 @@ class MainActivity : AppCompatActivity() {
                         dataDir = dataDir.absolutePath
                     )
 
-
                 val modelConfig =
                     OfflineTtsModelConfig(
                         vits = vitsConfig,
-                        numThreads = 2,
+                        numThreads = threadCount,
                         debug = false
                     )
-
 
                 val config =
                     OfflineTtsConfig(
                         model = modelConfig
                     )
 
-
-                val createdTts =
+                tts =
                     OfflineTts(
                         config = config
                     )
 
-
-                tts = createdTts
-
-
                 runOnUiThread {
 
                     statusText.text =
-                        "Ready • Ryan Medium • Fully Offline"
+                        "Ready • Ryan High • Fully Offline"
 
                     setUiEnabled(true)
                 }
@@ -363,7 +352,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-
     private fun preparePiperFiles(): File {
 
         val baseDirectory =
@@ -378,31 +366,23 @@ class MainActivity : AppCompatActivity() {
                 ".prepared"
             )
 
-
-        /*
-         * If the app was previously installed with
-         * Ryan High, Medium, etc., remove the old
-         * files and prepare the correct model again.
-         */
-
         val needsPreparation =
             !markerFile.isFile ||
-            markerFile.readText(
-                Charsets.UTF_8
-            ).trim() != PREPARE_VERSION ||
-            !File(
-                baseDirectory,
-                MODEL_NAME
-            ).isFile ||
-            !File(
-                baseDirectory,
-                "tokens.txt"
-            ).isFile ||
-            !File(
-                baseDirectory,
-                "espeak-ng-data"
-            ).isDirectory
-
+                    markerFile.readText(
+                        Charsets.UTF_8
+                    ).trim() != PREPARE_VERSION ||
+                    !File(
+                        baseDirectory,
+                        MODEL_NAME
+                    ).isFile ||
+                    !File(
+                        baseDirectory,
+                        "tokens.txt"
+                    ).isFile ||
+                    !File(
+                        baseDirectory,
+                        "espeak-ng-data"
+                    ).isDirectory
 
         if (needsPreparation) {
 
@@ -412,7 +392,6 @@ class MainActivity : AppCompatActivity() {
 
             baseDirectory.mkdirs()
 
-
             copyAssetFile(
                 "$ASSET_ROOT/$MODEL_NAME",
                 File(
@@ -420,7 +399,6 @@ class MainActivity : AppCompatActivity() {
                     MODEL_NAME
                 )
             )
-
 
             copyAssetFile(
                 "$ASSET_ROOT/tokens.txt",
@@ -430,7 +408,6 @@ class MainActivity : AppCompatActivity() {
                 )
             )
 
-
             copyAssetDirectory(
                 "$ASSET_ROOT/espeak-ng-data",
                 File(
@@ -439,17 +416,14 @@ class MainActivity : AppCompatActivity() {
                 )
             )
 
-
             markerFile.writeText(
                 PREPARE_VERSION,
                 Charsets.UTF_8
             )
         }
 
-
         return baseDirectory
     }
-
 
     private fun copyAssetDirectory(
         assetPath: String,
@@ -459,7 +433,6 @@ class MainActivity : AppCompatActivity() {
         val children =
             assets.list(assetPath)
                 ?: emptyArray()
-
 
         if (children.isEmpty()) {
 
@@ -471,11 +444,9 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-
         if (!destination.exists()) {
             destination.mkdirs()
         }
-
 
         for (child in children) {
 
@@ -488,11 +459,9 @@ class MainActivity : AppCompatActivity() {
                     child
                 )
 
-
             val childChildren =
                 assets.list(childAssetPath)
                     ?: emptyArray()
-
 
             if (childChildren.isEmpty()) {
 
@@ -511,7 +480,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-
     private fun copyAssetFile(
         assetPath: String,
         destination: File
@@ -526,9 +494,7 @@ class MainActivity : AppCompatActivity() {
             ).use { output ->
 
                 val buffer =
-                    ByteArray(
-                        32 * 1024
-                    )
+                    ByteArray(32 * 1024)
 
                 while (true) {
 
@@ -551,7 +517,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-
     private fun generateSpeech() {
 
         val inputText =
@@ -559,7 +524,6 @@ class MainActivity : AppCompatActivity() {
                 ?.toString()
                 ?.trim()
                 ?: ""
-
 
         if (inputText.isEmpty()) {
 
@@ -571,8 +535,13 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
+        if (inputText.length > MAX_TEXT_LENGTH) {
 
+            statusText.text =
+                "Maximum 20,000 characters."
 
+            return
+        }
 
         val currentTts =
             tts
@@ -585,11 +554,9 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-
         if (isGenerating) {
             return
         }
-
 
         isGenerating = true
 
@@ -604,82 +571,173 @@ class MainActivity : AppCompatActivity() {
             saveButton.isEnabled = false
             stopButton.isEnabled = false
 
-            statusText.text =
-                "Generating speech..."
-        }
+            progressBar.progress = 0
+            progressBar.visibility =
+                ProgressBar.VISIBLE
 
+            statusText.text =
+                "Preparing script..."
+        }
 
         val speed =
             getSelectedSpeed()
 
-
         thread {
 
-            var audio:
-                com.k2fsa.sherpa.onnx.GeneratedAudio? =
-                null
-
+            val temporaryDirectory =
+                File(
+                    cacheDir,
+                    "tts_chunks"
+                )
 
             try {
 
-                val outputFile =
+                val chunks =
+                    splitTextIntoChunks(
+                        inputText,
+                        MAX_CHUNK_CHARACTERS
+                    )
+
+                if (chunks.isEmpty()) {
+                    throw IOException(
+                        "No usable text found."
+                    )
+                }
+
+                if (temporaryDirectory.exists()) {
+                    temporaryDirectory.deleteRecursively()
+                }
+
+                temporaryDirectory.mkdirs()
+
+                val chunkFiles =
+                    ArrayList<File>()
+
+                for (index in chunks.indices) {
+
+                    val chunk =
+                        chunks[index]
+
+                    runOnUiThread {
+
+                        statusText.text =
+                            String.format(
+                                Locale.US,
+                                "Generating • %d / %d",
+                                index + 1,
+                                chunks.size
+                            )
+
+                        progressBar.progress =
+                            ((index.toFloat() /
+                                    chunks.size.toFloat()) * 100f)
+                                .toInt()
+                    }
+
+                    val audio =
+                        currentTts.generateWithConfig(
+                            text = chunk,
+                            config =
+                                GenerationConfig(
+                                    sid = 0,
+                                    speed = speed,
+                                    silenceScale =
+                                        SILENCE_SCALE
+                                )
+                        )
+
+                    val chunkFile =
+                        File(
+                            temporaryDirectory,
+                            String.format(
+                                Locale.US,
+                                "chunk_%05d.wav",
+                                index
+                            )
+                        )
+
+                    if (!audio.save(
+                            filename =
+                                chunkFile.absolutePath
+                        )
+                    ) {
+
+                        audio.release()
+
+                        throw IOException(
+                            "Failed to generate chunk ${index + 1}."
+                        )
+                    }
+
+                    audio.release()
+
+                    if (
+                        !chunkFile.isFile ||
+                        chunkFile.length() <= 44
+                    ) {
+
+                        throw IOException(
+                            "Invalid audio chunk ${index + 1}."
+                        )
+                    }
+
+                    chunkFiles.add(chunkFile)
+
+                    runOnUiThread {
+
+                        progressBar.progress =
+                            (((index + 1).toFloat() /
+                                    chunks.size.toFloat()) * 100f)
+                                .toInt()
+                    }
+                }
+
+                runOnUiThread {
+
+                    statusText.text =
+                        "Combining audio..."
+                }
+
+                val finalFile =
                     File(
                         cacheDir,
                         "piper_output.wav"
                     )
 
-
-                if (outputFile.exists()) {
-                    outputFile.delete()
+                if (finalFile.exists()) {
+                    finalFile.delete()
                 }
 
+                concatenateWavFiles(
+                    chunkFiles,
+                    finalFile
+                )
 
-                val generationConfig =
-                    GenerationConfig(
-                        sid = 0,
-                        speed = speed,
-                        silenceScale = 0.2f
-                    )
-
-
-                audio =
-                    currentTts.generateWithConfig(
-                        text = inputText,
-                        config = generationConfig
-                    )
-
-
-                if (!audio.save(
-                        filename = outputFile.absolutePath
-                    )
+                if (
+                    !finalFile.isFile ||
+                    finalFile.length() <= 44
                 ) {
 
                     throw IOException(
-                        "Failed to save generated WAV."
+                        "Final WAV is invalid."
                     )
                 }
-
-
-                if (!outputFile.isFile ||
-                    outputFile.length() <= 0
-                ) {
-
-                    throw IOException(
-                        "Generated WAV is empty."
-                    )
-                }
-
 
                 generatedWav =
-                    outputFile
+                    finalFile
 
+                temporaryDirectory.deleteRecursively()
 
                 runOnUiThread {
+
+                    progressBar.progress = 100
+                    progressBar.visibility =
+                        ProgressBar.GONE
 
                     statusText.text =
                         String.format(
                             Locale.US,
-                            "Speech generated • %.2fx",
+                            "Ready • Ryan High • %.2fx",
                             speed
                         )
 
@@ -689,15 +747,18 @@ class MainActivity : AppCompatActivity() {
                     stopButton.isEnabled = false
                 }
 
-
             } catch (e: Throwable) {
+
+                temporaryDirectory.deleteRecursively()
 
                 val message =
                     e.message
                         ?: e.javaClass.simpleName
 
-
                 runOnUiThread {
+
+                    progressBar.visibility =
+                        ProgressBar.GONE
 
                     statusText.text =
                         "Generation failed:\n$message"
@@ -710,21 +771,645 @@ class MainActivity : AppCompatActivity() {
 
             } finally {
 
-                audio = null
-
                 isGenerating = false
             }
         }
     }
 
+    private fun splitTextIntoChunks(
+        text: String,
+        maxCharacters: Int
+    ): List<String> {
+
+        val cleaned =
+            text
+                .replace("\r\n", "\n")
+                .replace("\r", "\n")
+                .replace(
+                    Regex("[ \t]+"),
+                    " "
+                )
+                .replace(
+                    Regex("\n{3,}"),
+                    "\n\n"
+                )
+                .trim()
+
+        if (cleaned.isEmpty()) {
+            return emptyList()
+        }
+
+        if (cleaned.length <= maxCharacters) {
+            return listOf(cleaned)
+        }
+
+        val chunks =
+            ArrayList<String>()
+
+        val paragraphs =
+            cleaned.split(
+                Regex("\\n\\s*\\n")
+            )
+
+        var current =
+            StringBuilder()
+
+        fun flush() {
+
+            val value =
+                current.toString().trim()
+
+            if (value.isNotEmpty()) {
+                chunks.add(value)
+            }
+
+            current =
+                StringBuilder()
+        }
+
+        fun addPiece(piece: String) {
+
+            val value =
+                piece.trim()
+
+            if (value.isEmpty()) {
+                return
+            }
+
+            if (value.length <= maxCharacters) {
+
+                if (current.isEmpty()) {
+
+                    current.append(value)
+
+                } else if (
+                    current.length +
+                    1 +
+                    value.length <=
+                    maxCharacters
+                ) {
+
+                    current
+                        .append(" ")
+                        .append(value)
+
+                } else {
+
+                    flush()
+
+                    current.append(value)
+                }
+
+                return
+            }
+
+            val clauses =
+                value.split(
+                    Regex(
+                        "(?<=[,;:—–-])\\s+"
+                    )
+                )
+
+            for (clause in clauses) {
+
+                if (clause.length <= maxCharacters) {
+
+                    addPiece(clause)
+
+                } else {
+
+                    val words =
+                        clause.split(
+                            Regex("\\s+")
+                        )
+
+                    for (word in words) {
+
+                        if (
+                            word.length >
+                            maxCharacters
+                        ) {
+
+                            if (current.isNotEmpty()) {
+                                flush()
+                            }
+
+                            var start = 0
+
+                            while (
+                                start <
+                                word.length
+                            ) {
+
+                                val end =
+                                    minOf(
+                                        start +
+                                                maxCharacters,
+                                        word.length
+                                    )
+
+                                chunks.add(
+                                    word.substring(
+                                        start,
+                                        end
+                                    )
+                                )
+
+                                start = end
+                            }
+
+                        } else {
+
+                            if (current.isEmpty()) {
+
+                                current.append(word)
+
+                            } else if (
+                                current.length +
+                                1 +
+                                word.length <=
+                                maxCharacters
+                            ) {
+
+                                current
+                                    .append(" ")
+                                    .append(word)
+
+                            } else {
+
+                                flush()
+
+                                current.append(word)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        for (paragraph in paragraphs) {
+
+            val sentences =
+                paragraph
+                    .trim()
+                    .split(
+                        Regex(
+                            "(?<=[.!?。！？])\\s+"
+                        )
+                    )
+
+            for (sentence in sentences) {
+                addPiece(sentence)
+            }
+
+            if (current.isNotEmpty()) {
+                flush()
+            }
+        }
+
+        if (current.isNotEmpty()) {
+            flush()
+        }
+
+        return chunks
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+    }
+
+    private fun concatenateWavFiles(
+        files: List<File>,
+        output: File
+    ) {
+
+        if (files.isEmpty()) {
+            throw IOException(
+                "No WAV files."
+            )
+        }
+
+        if (output.exists()) {
+            output.delete()
+        }
+
+        val first =
+            WavInfo.read(files.first())
+
+        FileOutputStream(output).use { out ->
+
+            writeAscii(out, "RIFF")
+            writeIntLE(out, 0)
+            writeAscii(out, "WAVE")
+
+            writeAscii(out, "fmt ")
+            writeIntLE(out, 16)
+
+            writeShortLE(
+                out,
+                first.audioFormat
+            )
+
+            writeShortLE(
+                out,
+                first.channels
+            )
+
+            writeIntLE(
+                out,
+                first.sampleRate
+            )
+
+            writeIntLE(
+                out,
+                first.byteRate
+            )
+
+            writeShortLE(
+                out,
+                first.blockAlign
+            )
+
+            writeShortLE(
+                out,
+                first.bitsPerSample
+            )
+
+            writeAscii(out, "data")
+            writeIntLE(out, 0)
+
+            var totalDataSize = 0L
+
+            val buffer =
+                ByteArray(64 * 1024)
+
+            for (file in files) {
+
+                val info =
+                    WavInfo.read(file)
+
+                if (
+                    info.audioFormat !=
+                    first.audioFormat ||
+                    info.channels !=
+                    first.channels ||
+                    info.sampleRate !=
+                    first.sampleRate ||
+                    info.bitsPerSample !=
+                    first.bitsPerSample
+                ) {
+
+                    throw IOException(
+                        "WAV format mismatch."
+                    )
+                }
+
+                RandomAccessFile(
+                    file,
+                    "r"
+                ).use { raf ->
+
+                    raf.seek(
+                        info.dataOffset
+                    )
+
+                    var remaining =
+                        info.dataSize
+
+                    while (remaining > 0) {
+
+                        val wanted =
+                            minOf(
+                                buffer.size.toLong(),
+                                remaining
+                            ).toInt()
+
+                        val read =
+                            raf.read(
+                                buffer,
+                                0,
+                                wanted
+                            )
+
+                        if (read <= 0) {
+                            break
+                        }
+
+                        out.write(
+                            buffer,
+                            0,
+                            read
+                        )
+
+                        totalDataSize += read
+                        remaining -= read
+                    }
+                }
+            }
+
+            out.flush()
+
+            RandomAccessFile(
+                output,
+                "rw"
+            ).use { raf ->
+
+                raf.seek(4)
+
+                writeIntLE(
+                    raf,
+                    (
+                        36L +
+                                totalDataSize
+                        )
+                        .coerceAtMost(
+                            0xFFFFFFFFL
+                        )
+                        .toInt()
+                )
+
+                raf.seek(40)
+
+                writeIntLE(
+                    raf,
+                    totalDataSize
+                        .coerceAtMost(
+                            0xFFFFFFFFL
+                        )
+                        .toInt()
+                )
+            }
+        }
+    }
+
+    private fun writeAscii(
+        output: FileOutputStream,
+        value: String
+    ) {
+
+        output.write(
+            value.toByteArray(
+                Charsets.US_ASCII
+            )
+        )
+    }
+
+    private fun writeIntLE(
+        output: FileOutputStream,
+        value: Int
+    ) {
+
+        output.write(
+            value and 0xFF
+        )
+
+        output.write(
+            (value shr 8) and 0xFF
+        )
+
+        output.write(
+            (value shr 16) and 0xFF
+        )
+
+        output.write(
+            (value shr 24) and 0xFF
+        )
+    }
+
+    private fun writeShortLE(
+        output: FileOutputStream,
+        value: Int
+    ) {
+
+        output.write(
+            value and 0xFF
+        )
+
+        output.write(
+            (value shr 8) and 0xFF
+        )
+    }
+
+    private fun writeIntLE(
+        raf: RandomAccessFile,
+        value: Int
+    ) {
+
+        raf.write(
+            value and 0xFF
+        )
+
+        raf.write(
+            (value shr 8) and 0xFF
+        )
+
+        raf.write(
+            (value shr 16) and 0xFF
+        )
+
+        raf.write(
+            (value shr 24) and 0xFF
+        )
+    }
+
+    private class WavInfo(
+        val audioFormat: Int,
+        val channels: Int,
+        val sampleRate: Int,
+        val byteRate: Int,
+        val blockAlign: Int,
+        val bitsPerSample: Int,
+        val dataOffset: Long,
+        val dataSize: Long
+    ) {
+
+        companion object {
+
+            fun read(
+                file: File
+            ): WavInfo {
+
+                RandomAccessFile(
+                    file,
+                    "r"
+                ).use { raf ->
+
+                    val riff =
+                        readAscii(
+                            raf,
+                            4
+                        )
+
+                    if (riff != "RIFF") {
+                        throw IOException(
+                            "Invalid WAV: ${file.name}"
+                        )
+                    }
+
+                    raf.skipBytes(4)
+
+                    val wave =
+                        readAscii(
+                            raf,
+                            4
+                        )
+
+                    if (wave != "WAVE") {
+                        throw IOException(
+                            "Invalid WAVE: ${file.name}"
+                        )
+                    }
+
+                    var audioFormat = -1
+                    var channels = -1
+                    var sampleRate = -1
+                    var byteRate = -1
+                    var blockAlign = -1
+                    var bitsPerSample = -1
+
+                    var dataOffset = -1L
+                    var dataSize = -1L
+
+                    while (
+                        raf.filePointer + 8 <=
+                        raf.length()
+                    ) {
+
+                        val chunkId =
+                            readAscii(
+                                raf,
+                                4
+                            )
+
+                        val chunkSize =
+                            readIntLE(raf)
+                                .toLong() and
+                                0xFFFFFFFFL
+
+                        val chunkStart =
+                            raf.filePointer
+
+                        when (chunkId) {
+
+                            "fmt " -> {
+
+                                audioFormat =
+                                    readShortLE(raf)
+
+                                channels =
+                                    readShortLE(raf)
+
+                                sampleRate =
+                                    readIntLE(raf)
+
+                                byteRate =
+                                    readIntLE(raf)
+
+                                blockAlign =
+                                    readShortLE(raf)
+
+                                bitsPerSample =
+                                    readShortLE(raf)
+                            }
+
+                            "data" -> {
+
+                                dataOffset =
+                                    chunkStart
+
+                                dataSize =
+                                    chunkSize
+
+                                break
+                            }
+                        }
+
+                        raf.seek(
+                            chunkStart +
+                                    chunkSize +
+                                    (
+                                        chunkSize and
+                                                1L
+                                        )
+                        )
+                    }
+
+                    if (
+                        audioFormat < 0 ||
+                        channels < 0 ||
+                        sampleRate < 0 ||
+                        bitsPerSample < 0 ||
+                        dataOffset < 0 ||
+                        dataSize < 0
+                    ) {
+
+                        throw IOException(
+                            "Invalid WAV structure."
+                        )
+                    }
+
+                    return WavInfo(
+                        audioFormat,
+                        channels,
+                        sampleRate,
+                        byteRate,
+                        blockAlign,
+                        bitsPerSample,
+                        dataOffset,
+                        dataSize
+                    )
+                }
+            }
+
+            private fun readAscii(
+                raf: RandomAccessFile,
+                count: Int
+            ): String {
+
+                val bytes =
+                    ByteArray(count)
+
+                raf.readFully(bytes)
+
+                return String(
+                    bytes,
+                    Charsets.US_ASCII
+                )
+            }
+
+            private fun readIntLE(
+                raf: RandomAccessFile
+            ): Int {
+
+                val b0 = raf.read()
+                val b1 = raf.read()
+                val b2 = raf.read()
+                val b3 = raf.read()
+
+                return b0 or
+                        (b1 shl 8) or
+                        (b2 shl 16) or
+                        (b3 shl 24)
+            }
+
+            private fun readShortLE(
+                raf: RandomAccessFile
+            ): Int {
+
+                val b0 = raf.read()
+                val b1 = raf.read()
+
+                return b0 or
+                        (b1 shl 8)
+            }
+        }
+    }
 
     private fun playGeneratedAudio() {
 
         val wav =
             generatedWav
 
-
-        if (wav == null ||
+        if (
+            wav == null ||
             !wav.isFile
         ) {
 
@@ -734,9 +1419,7 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-
         stopPlayback()
-
 
         try {
 
@@ -747,7 +1430,6 @@ class MainActivity : AppCompatActivity() {
                         wav.absolutePath
                     )
 
-
                     setOnPreparedListener {
 
                         start()
@@ -755,12 +1437,12 @@ class MainActivity : AppCompatActivity() {
                         runOnUiThread {
 
                             statusText.text =
-                                "Playing..."
+                                "Playing Ryan High..."
+
                             stopButton.isEnabled =
                                 true
                         }
                     }
-
 
                     setOnCompletionListener {
 
@@ -778,9 +1460,9 @@ class MainActivity : AppCompatActivity() {
                         mediaPlayer = null
                     }
 
-
                     setOnErrorListener {
-                        _, _, _ ->
+
+                            _, _, _ ->
 
                         runOnUiThread {
 
@@ -798,28 +1480,27 @@ class MainActivity : AppCompatActivity() {
                         true
                     }
 
-
                     prepareAsync()
                 }
-
 
         } catch (e: Throwable) {
 
             statusText.text =
                 "Playback failed:\n${e.message}"
 
-            mediaPlayer?.release()
+            try {
+                mediaPlayer?.release()
+            } catch (_: Throwable) {
+            }
 
             mediaPlayer = null
         }
     }
 
-
     private fun stopPlayback() {
 
         val player =
             mediaPlayer
-
 
         if (player != null) {
 
@@ -832,7 +1513,6 @@ class MainActivity : AppCompatActivity() {
             } catch (_: Throwable) {
             }
 
-
             try {
                 player.release()
             } catch (_: Throwable) {
@@ -840,7 +1520,6 @@ class MainActivity : AppCompatActivity() {
 
             mediaPlayer = null
         }
-
 
         if (!isFinishing) {
 
@@ -852,14 +1531,13 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-
     private fun saveGeneratedWav() {
 
         val source =
             generatedWav
 
-
-        if (source == null ||
+        if (
+            source == null ||
             !source.isFile
         ) {
 
@@ -869,18 +1547,12 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-
         thread {
 
             try {
 
                 val filename =
-                    "Piper_${System.currentTimeMillis()}.wav"
-
-
-                val resolver =
-                    contentResolver
-
+                    "Piper_RyanHigh_${System.currentTimeMillis()}.wav"
 
                 val values =
                     ContentValues().apply {
@@ -898,17 +1570,15 @@ class MainActivity : AppCompatActivity() {
                         put(
                             MediaStore.MediaColumns.RELATIVE_PATH,
                             Environment.DIRECTORY_MUSIC +
-                                "/Piper TTS"
+                                    "/Piper TTS"
                         )
                     }
 
-
                 val uri =
-                    resolver.insert(
+                    contentResolver.insert(
                         MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
                         values
                     )
-
 
                 if (uri == null) {
 
@@ -917,32 +1587,31 @@ class MainActivity : AppCompatActivity() {
                     )
                 }
 
-
                 try {
 
-                    resolver.openOutputStream(uri).use { output ->
+                    contentResolver
+                        .openOutputStream(uri)
+                        .use { output ->
 
-                        if (output == null) {
+                            if (output == null) {
+                                throw IOException(
+                                    "Could not open output stream."
+                                )
+                            }
 
-                            throw IOException(
-                                "Could not open output stream."
-                            )
+                            FileInputStream(
+                                source
+                            ).use { input ->
+
+                                input.copyTo(
+                                    output
+                                )
+                            }
                         }
-
-
-                        FileInputStream(
-                            source
-                        ).use { input ->
-
-                            input.copyTo(
-                                output
-                            )
-                        }
-                    }
 
                 } catch (e: Throwable) {
 
-                    resolver.delete(
+                    contentResolver.delete(
                         uri,
                         null,
                         null
@@ -951,13 +1620,11 @@ class MainActivity : AppCompatActivity() {
                     throw e
                 }
 
-
                 runOnUiThread {
 
                     statusText.text =
                         "Saved to Music/Piper TTS/$filename"
                 }
-
 
             } catch (e: Throwable) {
 
@@ -970,7 +1637,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-
     private fun copyText() {
 
         val text =
@@ -978,7 +1644,6 @@ class MainActivity : AppCompatActivity() {
                 ?.toString()
                 ?.trim()
                 ?: ""
-
 
         if (text.isEmpty()) {
 
@@ -988,12 +1653,10 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-
         val clipboard =
             getSystemService(
                 Context.CLIPBOARD_SERVICE
             ) as ClipboardManager
-
 
         clipboard.setPrimaryClip(
             ClipData.newPlainText(
@@ -1002,22 +1665,20 @@ class MainActivity : AppCompatActivity() {
             )
         )
 
-
         statusText.text =
             "Text copied."
     }
 
-
     override fun onDestroy() {
 
-        stopPlayback()
+        isGenerating = false
 
+        stopPlayback()
 
         try {
             tts?.release()
         } catch (_: Throwable) {
         }
-
 
         tts = null
 
