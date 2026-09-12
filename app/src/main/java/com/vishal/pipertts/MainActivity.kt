@@ -33,24 +33,14 @@ class MainActivity : AppCompatActivity() {
         private const val MODEL_NAME = "en_US-ryan-high.onnx"
         private const val ASSET_ROOT = "ryan"
 
-        private const val PREPARE_VERSION = "ryan-high-v4"
+        private const val PREPARE_VERSION = "ryan-high-final-v1"
 
         private const val MAX_TEXT_LENGTH = 20_000
+        private const val MAX_CHUNK_CHARACTERS = 700
 
         private const val MIN_SPEED = 0.80f
         private const val MAX_SPEED = 1.50f
 
-        /*
-         * Text is generated in smaller sections.
-         * This prevents very large requests from consuming
-         * excessive memory and improves reliability.
-         */
-        private const val MAX_CHUNK_CHARACTERS = 700
-
-        /*
-         * 0.2 is the sherpa-onnx default sentence silence scale.
-         * Keeping the default gives natural sentence spacing.
-         */
         private const val SILENCE_SCALE = 0.20f
     }
 
@@ -77,6 +67,9 @@ class MainActivity : AppCompatActivity() {
 
     @Volatile
     private var generationCancelled = false
+
+    @Volatile
+    private var generationId = 0L
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -232,19 +225,6 @@ class MainActivity : AppCompatActivity() {
 
     private fun getSelectedSpeed(): Float {
 
-        /*
-         * SeekBar is expected to use:
-         * min = 0
-         * max = 200
-         *
-         * 0    = 0.80x
-         * 100  = 1.15x
-         * 200  = 1.50x
-         *
-         * The XML should start at progress 57
-         * for approximately 1.00x.
-         */
-
         val progress =
             speedSeekBar.progress.coerceIn(0, 200)
 
@@ -308,44 +288,30 @@ class MainActivity : AppCompatActivity() {
                         "espeak-ng-data"
                     )
 
-                if (!modelFile.isFile) {
-                    throw IOException(
-                        "Piper model was not copied:\n${modelFile.absolutePath}"
-                    )
+                require(modelFile.isFile) {
+                    "Piper model was not copied:\n${modelFile.absolutePath}"
                 }
 
-                if (!tokensFile.isFile) {
-                    throw IOException(
-                        "tokens.txt was not copied:\n${tokensFile.absolutePath}"
-                    )
+                require(tokensFile.isFile) {
+                    "tokens.txt was not copied:\n${tokensFile.absolutePath}"
                 }
 
-                if (!dataDir.isDirectory) {
-                    throw IOException(
-                        "espeak-ng-data was not copied:\n${dataDir.absolutePath}"
-                    )
+                require(dataDir.isDirectory) {
+                    "espeak-ng-data was not copied:\n${dataDir.absolutePath}"
                 }
 
                 val cpuCount =
                     Runtime.getRuntime()
                         .availableProcessors()
 
-                /*
-                 * Keep the number of inference threads reasonable.
-                 * Too many threads can actually make low-end phones
-                 * slower because of thermal throttling.
-                 */
                 val threadCount =
                     cpuCount.coerceIn(2, 4)
 
                 val vitsConfig =
                     OfflineTtsVitsModelConfig(
-                        model =
-                            modelFile.absolutePath,
-                        tokens =
-                            tokensFile.absolutePath,
-                        dataDir =
-                            dataDir.absolutePath
+                        model = modelFile.absolutePath,
+                        tokens = tokensFile.absolutePath,
+                        dataDir = dataDir.absolutePath
                     )
 
                 val modelConfig =
@@ -357,7 +323,8 @@ class MainActivity : AppCompatActivity() {
 
                 val config =
                     OfflineTtsConfig(
-                        model = modelConfig
+                        model = modelConfig,
+                        silenceScale = SILENCE_SCALE
                     )
 
                 tts =
@@ -602,6 +569,12 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
+        val myGenerationId =
+            generationId + 1
+
+        generationId =
+            myGenerationId
+
         isGenerating = true
         generationCancelled = false
 
@@ -614,7 +587,6 @@ class MainActivity : AppCompatActivity() {
             generateButton.isEnabled = false
             playButton.isEnabled = false
             saveButton.isEnabled = false
-
             stopButton.isEnabled = true
 
             progressBar.progress = 0
@@ -633,7 +605,7 @@ class MainActivity : AppCompatActivity() {
             val temporaryDirectory =
                 File(
                     cacheDir,
-                    "tts_chunks"
+                    "tts_chunks_$myGenerationId"
                 )
 
             try {
@@ -650,10 +622,6 @@ class MainActivity : AppCompatActivity() {
                     )
                 }
 
-                if (temporaryDirectory.exists()) {
-                    temporaryDirectory.deleteRecursively()
-                }
-
                 if (!temporaryDirectory.mkdirs() &&
                     !temporaryDirectory.isDirectory
                 ) {
@@ -667,31 +635,37 @@ class MainActivity : AppCompatActivity() {
 
                 for (index in chunks.indices) {
 
-                    if (generationCancelled) {
-                        throw GenerationCancelledException()
-                    }
+                    checkGenerationActive(
+                        myGenerationId
+                    )
 
                     val chunk =
                         chunks[index]
 
                     runOnUiThread {
 
-                        statusText.text =
-                            String.format(
-                                Locale.US,
-                                "Generating • %d / %d",
-                                index + 1,
-                                chunks.size
-                            )
+                        if (
+                            generationId ==
+                            myGenerationId
+                        ) {
 
-                        progressBar.progress =
-                            (
+                            statusText.text =
+                                String.format(
+                                    Locale.US,
+                                    "Generating • %d / %d",
+                                    index + 1,
+                                    chunks.size
+                                )
+
+                            progressBar.progress =
                                 (
-                                    index.toFloat() /
-                                            chunks.size.toFloat()
-                                    ) *
-                                        100f
-                                ).toInt()
+                                    (
+                                        index.toFloat() /
+                                                chunks.size.toFloat()
+                                        ) *
+                                            100f
+                                    ).toInt()
+                        }
                     }
 
                     val audio =
@@ -706,9 +680,9 @@ class MainActivity : AppCompatActivity() {
                                 )
                         )
 
-                    if (generationCancelled) {
-                        throw GenerationCancelledException()
-                    }
+                    checkGenerationActive(
+                        myGenerationId
+                    )
 
                     val chunkFile =
                         File(
@@ -720,13 +694,6 @@ class MainActivity : AppCompatActivity() {
                             )
                         )
 
-                    /*
-                     * GeneratedAudio.save() creates the WAV.
-                     *
-                     * Do NOT call audio.release().
-                     * GeneratedAudio is not a MediaPlayer and
-                     * the Kotlin API does not expose release().
-                     */
                     if (!audio.save(
                             filename =
                                 chunkFile.absolutePath
@@ -752,31 +719,42 @@ class MainActivity : AppCompatActivity() {
 
                     runOnUiThread {
 
-                        progressBar.progress =
-                            (
+                        if (
+                            generationId ==
+                            myGenerationId
+                        ) {
+
+                            progressBar.progress =
                                 (
-                                    (index + 1).toFloat() /
-                                            chunks.size.toFloat()
-                                    ) *
-                                        100f
-                                ).toInt()
+                                    (
+                                        (index + 1).toFloat() /
+                                                chunks.size.toFloat()
+                                        ) *
+                                            100f
+                                    ).toInt()
+                        }
                     }
                 }
 
-                if (generationCancelled) {
-                    throw GenerationCancelledException()
-                }
+                checkGenerationActive(
+                    myGenerationId
+                )
 
                 runOnUiThread {
 
-                    statusText.text =
-                        "Combining audio..."
+                    if (
+                        generationId ==
+                        myGenerationId
+                    ) {
+                        statusText.text =
+                            "Combining audio..."
+                    }
                 }
 
                 val finalFile =
                     File(
                         cacheDir,
-                        "piper_output.wav"
+                        "piper_output_$myGenerationId.wav"
                     )
 
                 if (finalFile.exists()) {
@@ -786,6 +764,10 @@ class MainActivity : AppCompatActivity() {
                 concatenateWavFiles(
                     chunkFiles,
                     finalFile
+                )
+
+                checkGenerationActive(
+                    myGenerationId
                 )
 
                 if (
@@ -805,76 +787,117 @@ class MainActivity : AppCompatActivity() {
 
                 runOnUiThread {
 
-                    progressBar.progress = 100
-                    progressBar.visibility =
-                        ProgressBar.GONE
+                    if (
+                        generationId ==
+                        myGenerationId
+                    ) {
 
-                    statusText.text =
-                        String.format(
-                            Locale.US,
-                            "Ready • Ryan High • %.2fx",
-                            speed
-                        )
+                        progressBar.progress = 100
+                        progressBar.visibility =
+                            ProgressBar.GONE
 
-                    generateButton.isEnabled = true
-                    playButton.isEnabled = true
-                    saveButton.isEnabled = true
-                    stopButton.isEnabled = false
+                        statusText.text =
+                            String.format(
+                                Locale.US,
+                                "Ready • Ryan High • %.2fx",
+                                speed
+                            )
+
+                        generateButton.isEnabled = true
+                        playButton.isEnabled = true
+                        saveButton.isEnabled = true
+                        stopButton.isEnabled = false
+                    }
                 }
 
-            } catch (e: GenerationCancelledException) {
+            } catch (_: GenerationCancelledException) {
 
                 temporaryDirectory.deleteRecursively()
 
-                generatedWav = null
+                if (
+                    generatedWav?.absolutePath?.contains(
+                        myGenerationId.toString()
+                    ) == true
+                ) {
+                    generatedWav = null
+                }
 
                 runOnUiThread {
 
-                    progressBar.visibility =
-                        ProgressBar.GONE
+                    if (
+                        generationId ==
+                        myGenerationId
+                    ) {
 
-                    progressBar.progress = 0
+                        generatedWav = null
 
-                    statusText.text =
-                        "Generation cancelled."
+                        progressBar.visibility =
+                            ProgressBar.GONE
 
-                    generateButton.isEnabled = true
-                    playButton.isEnabled = false
-                    saveButton.isEnabled = false
-                    stopButton.isEnabled = false
+                        progressBar.progress = 0
+
+                        statusText.text =
+                            "Generation cancelled."
+
+                        generateButton.isEnabled = true
+                        playButton.isEnabled = false
+                        saveButton.isEnabled = false
+                        stopButton.isEnabled = false
+                    }
                 }
 
             } catch (e: Throwable) {
 
                 temporaryDirectory.deleteRecursively()
 
-                generatedWav = null
-
-                val message =
-                    e.message
-                        ?: e.javaClass.simpleName
-
                 runOnUiThread {
 
-                    progressBar.visibility =
-                        ProgressBar.GONE
+                    if (
+                        generationId ==
+                        myGenerationId
+                    ) {
 
-                    progressBar.progress = 0
+                        generatedWav = null
 
-                    statusText.text =
-                        "Generation failed:\n$message"
+                        progressBar.visibility =
+                            ProgressBar.GONE
 
-                    generateButton.isEnabled = true
-                    playButton.isEnabled = false
-                    saveButton.isEnabled = false
-                    stopButton.isEnabled = false
+                        progressBar.progress = 0
+
+                        statusText.text =
+                            "Generation failed:\n${e.message ?: e.javaClass.simpleName}"
+
+                        generateButton.isEnabled = true
+                        playButton.isEnabled = false
+                        saveButton.isEnabled = false
+                        stopButton.isEnabled = false
+                    }
                 }
 
             } finally {
 
-                isGenerating = false
-                generationCancelled = false
+                if (
+                    generationId ==
+                    myGenerationId
+                ) {
+                    isGenerating = false
+                    generationCancelled = false
+                }
             }
+        }
+    }
+
+    private fun checkGenerationActive(
+        id: Long
+    ) {
+
+        if (
+            generationCancelled ||
+            generationId != id ||
+            isFinishing ||
+            isDestroyed
+        ) {
+            throw GenerationCancelledException()
         }
     }
 
@@ -888,14 +911,8 @@ class MainActivity : AppCompatActivity() {
 
         val cleaned =
             text
-                .replace(
-                    "\r\n",
-                    "\n"
-                )
-                .replace(
-                    "\r",
-                    "\n"
-                )
+                .replace("\r\n", "\n")
+                .replace("\r", "\n")
                 .replace(
                     Regex("[ \t]+"),
                     " "
@@ -1049,10 +1066,6 @@ class MainActivity : AppCompatActivity() {
                 return
             }
 
-            /*
-             * First try to split long sections around
-             * commas, semicolons, colons and dashes.
-             */
             val clauses =
                 value.split(
                     Regex(
@@ -1079,10 +1092,6 @@ class MainActivity : AppCompatActivity() {
                 continue
             }
 
-            /*
-             * Split at normal sentence-ending punctuation.
-             * This keeps sentences together whenever possible.
-             */
             val sentences =
                 paragraph
                     .trim()
@@ -1139,6 +1148,8 @@ class MainActivity : AppCompatActivity() {
                 "Only PCM WAV files are supported."
             )
         }
+
+        var totalDataSize = 0L
 
         FileOutputStream(output).use { out ->
 
@@ -1207,12 +1218,8 @@ class MainActivity : AppCompatActivity() {
                 0
             )
 
-            var totalDataSize = 0L
-
             val buffer =
-                ByteArray(
-                    64 * 1024
-                )
+                ByteArray(64 * 1024)
 
             for (file in files) {
 
@@ -1220,18 +1227,26 @@ class MainActivity : AppCompatActivity() {
                     WavInfo.read(file)
 
                 if (
-                    info.audioFormat !=
-                    first.audioFormat ||
-                    info.channels !=
-                    first.channels ||
-                    info.sampleRate !=
-                    first.sampleRate ||
-                    info.bitsPerSample !=
-                    first.bitsPerSample
+                    info.audioFormat != first.audioFormat ||
+                    info.channels != first.channels ||
+                    info.sampleRate != first.sampleRate ||
+                    info.bitsPerSample != first.bitsPerSample ||
+                    info.blockAlign != first.blockAlign
                 ) {
 
                     throw IOException(
                         "WAV format mismatch."
+                    )
+                }
+
+                if (
+                    totalDataSize +
+                    info.dataSize >
+                    0xFFFFFFFFL
+                ) {
+
+                    throw IOException(
+                        "Final WAV would be too large."
                     )
                 }
 
@@ -1265,7 +1280,9 @@ class MainActivity : AppCompatActivity() {
                             )
 
                         if (read <= 0) {
-                            break
+                            throw IOException(
+                                "Unexpected end of WAV."
+                            )
                         }
 
                         out.write(
@@ -1284,43 +1301,30 @@ class MainActivity : AppCompatActivity() {
             }
 
             out.flush()
+        }
 
-            RandomAccessFile(
-                output,
-                "rw"
-            ).use { raf ->
+        RandomAccessFile(
+            output,
+            "rw"
+        ).use { raf ->
 
-                val riffSize =
-                    (
-                        36L +
-                                totalDataSize
-                        )
-                        .coerceAtMost(
-                            0xFFFFFFFFL
-                        )
-                        .toInt()
+            val riffSize =
+                36L +
+                        totalDataSize
 
-                val dataSize =
-                    totalDataSize
-                        .coerceAtMost(
-                            0xFFFFFFFFL
-                        )
-                        .toInt()
+            raf.seek(4)
 
-                raf.seek(4)
+            writeIntLE(
+                raf,
+                riffSize.toInt()
+            )
 
-                writeIntLE(
-                    raf,
-                    riffSize
-                )
+            raf.seek(40)
 
-                raf.seek(40)
-
-                writeIntLE(
-                    raf,
-                    dataSize
-                )
-            }
+            writeIntLE(
+                raf,
+                totalDataSize.toInt()
+            )
         }
     }
 
@@ -1485,34 +1489,22 @@ class MainActivity : AppCompatActivity() {
                                 }
 
                                 audioFormat =
-                                    readShortLE(
-                                        raf
-                                    )
+                                    readShortLE(raf)
 
                                 channels =
-                                    readShortLE(
-                                        raf
-                                    )
+                                    readShortLE(raf)
 
                                 sampleRate =
-                                    readIntLE(
-                                        raf
-                                    )
+                                    readIntLE(raf)
 
                                 byteRate =
-                                    readIntLE(
-                                        raf
-                                    )
+                                    readIntLE(raf)
 
                                 blockAlign =
-                                    readShortLE(
-                                        raf
-                                    )
+                                    readShortLE(raf)
 
                                 bitsPerSample =
-                                    readShortLE(
-                                        raf
-                                    )
+                                    readShortLE(raf)
                             }
 
                             "data" -> {
@@ -1521,20 +1513,32 @@ class MainActivity : AppCompatActivity() {
                                     chunkStart
 
                                 dataSize =
-                                    chunkSize
+                                    minOf(
+                                        chunkSize,
+                                        raf.length() -
+                                                chunkStart
+                                    )
 
                                 break
                             }
                         }
 
-                        raf.seek(
+                        val next =
                             chunkStart +
                                     chunkSize +
                                     (
                                         chunkSize and
                                                 1L
                                         )
-                        )
+
+                        if (
+                            next >
+                            raf.length()
+                        ) {
+                            break
+                        }
+
+                        raf.seek(next)
                     }
 
                     if (
@@ -1554,22 +1558,14 @@ class MainActivity : AppCompatActivity() {
                     }
 
                     return WavInfo(
-                        audioFormat =
-                            audioFormat,
-                        channels =
-                            channels,
-                        sampleRate =
-                            sampleRate,
-                        byteRate =
-                            byteRate,
-                        blockAlign =
-                            blockAlign,
-                        bitsPerSample =
-                            bitsPerSample,
-                        dataOffset =
-                            dataOffset,
-                        dataSize =
-                            dataSize
+                        audioFormat,
+                        channels,
+                        sampleRate,
+                        byteRate,
+                        blockAlign,
+                        bitsPerSample,
+                        dataOffset,
+                        dataSize
                     )
                 }
             }
@@ -1594,17 +1590,10 @@ class MainActivity : AppCompatActivity() {
                 raf: RandomAccessFile
             ): Int {
 
-                val b0 =
-                    raf.read()
-
-                val b1 =
-                    raf.read()
-
-                val b2 =
-                    raf.read()
-
-                val b3 =
-                    raf.read()
+                val b0 = raf.read()
+                val b1 = raf.read()
+                val b2 = raf.read()
+                val b3 = raf.read()
 
                 if (
                     b0 < 0 ||
@@ -1628,11 +1617,8 @@ class MainActivity : AppCompatActivity() {
                 raf: RandomAccessFile
             ): Int {
 
-                val b0 =
-                    raf.read()
-
-                val b1 =
-                    raf.read()
+                val b0 = raf.read()
+                val b1 = raf.read()
 
                 if (
                     b0 < 0 ||
@@ -1670,85 +1656,91 @@ class MainActivity : AppCompatActivity() {
 
         try {
 
+            val player =
+                MediaPlayer()
+
             mediaPlayer =
-                MediaPlayer().apply {
+                player
 
-                    setDataSource(
-                        wav.absolutePath
-                    )
+            player.setDataSource(
+                wav.absolutePath
+            )
 
-                    setOnPreparedListener { mp ->
+            player.setOnPreparedListener { mp ->
 
-                        mp.start()
+                if (
+                    mediaPlayer !== mp
+                ) {
 
-                        runOnUiThread {
-
-                            statusText.text =
-                                "Playing Ryan High..."
-
-                            stopButton.isEnabled =
-                                true
-                        }
+                    try {
+                        mp.release()
+                    } catch (_: Throwable) {
                     }
 
-                    setOnCompletionListener { mp ->
-
-                        runOnUiThread {
-
-                            statusText.text =
-                                "Playback finished."
-
-                            stopButton.isEnabled =
-                                false
-                        }
-
-                        /*
-                         * IMPORTANT:
-                         * release the MediaPlayer itself.
-                         */
-                        try {
-                            mp.release()
-                        } catch (_: Throwable) {
-                        }
-
-                        if (
-                            mediaPlayer === mp
-                        ) {
-                            mediaPlayer = null
-                        }
-                    }
-
-                    setOnErrorListener { mp, _, _ ->
-
-                        runOnUiThread {
-
-                            statusText.text =
-                                "Playback error."
-
-                            stopButton.isEnabled =
-                                false
-                        }
-
-                        /*
-                         * IMPORTANT:
-                         * release the MediaPlayer itself.
-                         */
-                        try {
-                            mp.release()
-                        } catch (_: Throwable) {
-                        }
-
-                        if (
-                            mediaPlayer === mp
-                        ) {
-                            mediaPlayer = null
-                        }
-
-                        true
-                    }
-
-                    prepareAsync()
+                    return@setOnPreparedListener
                 }
+
+                mp.start()
+
+                runOnUiThread {
+
+                    statusText.text =
+                        "Playing Ryan High..."
+
+                    stopButton.isEnabled =
+                        true
+                }
+            }
+
+            player.setOnCompletionListener { mp ->
+
+                try {
+                    mp.release()
+                } catch (_: Throwable) {
+                }
+
+                if (
+                    mediaPlayer === mp
+                ) {
+                    mediaPlayer = null
+                }
+
+                runOnUiThread {
+
+                    statusText.text =
+                        "Playback finished."
+
+                    stopButton.isEnabled =
+                        false
+                }
+            }
+
+            player.setOnErrorListener { mp, _, _ ->
+
+                try {
+                    mp.release()
+                } catch (_: Throwable) {
+                }
+
+                if (
+                    mediaPlayer === mp
+                ) {
+                    mediaPlayer = null
+                }
+
+                runOnUiThread {
+
+                    statusText.text =
+                        "Playback error."
+
+                    stopButton.isEnabled =
+                        false
+                }
+
+                true
+            }
+
+            player.prepareAsync()
 
         } catch (e: Throwable) {
 
@@ -1844,6 +1836,11 @@ class MainActivity : AppCompatActivity() {
                             Environment.DIRECTORY_MUSIC +
                                     "/Piper TTS"
                         )
+
+                        put(
+                            MediaStore.MediaColumns.IS_PENDING,
+                            1
+                        )
                     }
 
                 val uri =
@@ -1877,10 +1874,26 @@ class MainActivity : AppCompatActivity() {
                             ).use { input ->
 
                                 input.copyTo(
-                                    output
+                                    output,
+                                    64 * 1024
                                 )
                             }
                         }
+
+                    val finishedValues =
+                        ContentValues().apply {
+                            put(
+                                MediaStore.MediaColumns.IS_PENDING,
+                                0
+                            )
+                        }
+
+                    contentResolver.update(
+                        uri,
+                        finishedValues,
+                        null,
+                        null
+                    )
 
                 } catch (e: Throwable) {
 
@@ -1945,7 +1958,7 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
 
         generationCancelled = true
-        isGenerating = false
+        generationId++
 
         stopPlayback()
 
