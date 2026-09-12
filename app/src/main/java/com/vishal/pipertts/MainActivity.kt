@@ -650,10 +650,9 @@ class MainActivity : AppCompatActivity() {
 
 
                 audio =
-                    currentTts.generateWithConfigAndCallback(
+                    currentTts.generateWithConfig(
                         text = inputText,
-                        config = generationConfig,
-                        callback = { 1 }
+                        config = generationConfig
                     )
 
 
