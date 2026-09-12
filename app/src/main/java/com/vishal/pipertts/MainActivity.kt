@@ -36,7 +36,7 @@ class MainActivity : AppCompatActivity() {
         private const val PREPARE_VERSION = "ryan-medium-v1"
 
         private const val DEFAULT_SPEED = 1.0f
-        private const val MIN_SPEED = 0.50f
+        private const val MIN_SPEED = 0.90f
         private const val MAX_SPEED = 2.00f
     }
 
@@ -190,7 +190,7 @@ class MainActivity : AppCompatActivity() {
         characterCount.text =
             String.format(
                 Locale.US,
-                "%d / 5000",
+                "%d",
                 count
             )
     }
@@ -572,13 +572,6 @@ class MainActivity : AppCompatActivity() {
         }
 
 
-        if (inputText.length > 5000) {
-
-            statusText.text =
-                "Text is too long."
-
-            return
-        }
 
 
         val currentTts =
