@@ -1,1 +1,174 @@
+name: Build Piper TTS Android APK
 
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+
+  build:
+
+    name: Build Piper TTS APK
+
+    runs-on: ubuntu-latest
+
+    env:
+      SHERPA_VERSION: "1.13.8"
+      PIPER_RELEASE_TAG: "pipertts"
+
+    steps:
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.13"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install onnx==1.17.0
+
+      - name: Download Piper voice from GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p build/piper
+
+          gh release download "$PIPER_RELEASE_TAG" \
+            --repo "${{ github.repository }}" \
+            --pattern "en_US-ryan-high.onnx" \
+            --pattern "en_US-ryan-high.onnx.json" \
+            --dir build/piper
+
+          echo "Downloaded Piper files:"
+          ls -lh build/piper
+
+      - name: Verify Piper files
+        run: |
+          test -f build/piper/en_US-ryan-high.onnx
+          test -f build/piper/en_US-ryan-high.onnx.json
+
+          echo "Piper model:"
+          ls -lh build/piper/en_US-ryan-high.onnx
+
+          echo "Piper config:"
+          ls -lh build/piper/en_US-ryan-high.onnx.json
+
+      - name: Prepare Piper model for sherpa-onnx
+        run: |
+          mkdir -p app/src/main/assets/ryan
+
+          python scripts/prepare_piper.py \
+            build/piper/en_US-ryan-high.onnx \
+            app/src/main/assets/ryan
+
+      - name: Verify converted model
+        run: |
+          ls -lh app/src/main/assets/ryan
+
+          test -f app/src/main/assets/ryan/en_US-ryan-high.onnx
+          test -f app/src/main/assets/ryan/tokens.txt
+
+      - name: Download eSpeak NG data
+        run: |
+          cd app/src/main/assets
+
+          curl -L \
+            --retry 5 \
+            --retry-all-errors \
+            -o espeak-ng-data.tar.bz2 \
+            "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/espeak-ng-data.tar.bz2"
+
+          tar -xjf espeak-ng-data.tar.bz2
+
+          rm espeak-ng-data.tar.bz2
+
+          if [ ! -d "espeak-ng-data" ]; then
+            echo "espeak-ng-data was not extracted"
+            exit 1
+          fi
+
+          echo "eSpeak data:"
+          du -sh espeak-ng-data
+
+      - name: Download sherpa-onnx Android AAR
+        run: |
+          mkdir -p app/libs
+
+          curl -L \
+            --retry 5 \
+            --retry-all-errors \
+            -o app/libs/sherpa-onnx-1.13.8.aar \
+            "https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-1.13.8.aar"
+
+          ls -lh app/libs/sherpa-onnx-1.13.8.aar
+
+      - name: Show project
+        run: |
+          echo "========================================"
+          echo "PROJECT"
+          echo "========================================"
+
+          find app/src/main -maxdepth 4 -type f | sort
+
+          echo "========================================"
+          echo "MODEL"
+          echo "========================================"
+
+          du -h \
+            app/src/main/assets/ryan/en_US-ryan-high.onnx
+
+          du -h \
+            app/src/main/assets/ryan/tokens.txt
+
+          echo "========================================"
+          echo "AAR"
+          echo "========================================"
+
+          ls -lh app/libs/
+
+      - name: Build Release APK
+        run: |
+          gradle clean assembleRelease --stacktrace
+
+      - name: Verify APK
+        run: |
+          echo "========================================"
+          echo "APK"
+          echo "========================================"
+
+          ls -lh app/build/outputs/apk/release/
+
+          test -f \
+            app/build/outputs/apk/release/app-release.apk
+
+      - name: Rename APK
+        run: |
+          cp \
+            app/build/outputs/apk/release/app-release.apk \
+            PiperTTS-RyanHigh.apk
+
+          ls -lh PiperTTS-RyanHigh.apk
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: PiperTTS-RyanHigh
+          path: PiperTTS-RyanHigh.apk
+          if-no-files-found: error
