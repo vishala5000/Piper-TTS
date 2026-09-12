@@ -30,10 +30,10 @@ import kotlin.concurrent.thread
 class MainActivity : AppCompatActivity() {
 
     companion object {
-        private const val MODEL_NAME = "en_US-ryan-medium.onnx"
+        private const val MODEL_NAME = "en_US-ryan-high.onnx"
         private const val ASSET_ROOT = "ryan"
 
-        private const val PREPARE_VERSION = "ryan-medium-v1"
+        private const val PREPARE_VERSION = "ryan-high-v1"
 
         private const val DEFAULT_SPEED = 1.0f
         private const val MIN_SPEED = 0.90f
