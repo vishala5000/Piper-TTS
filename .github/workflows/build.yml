@@ -47,8 +47,8 @@ jobs:
         run: |
           gh release download pipertts \
             --repo vishala5000/Piper-TTS \
-            --pattern "en_US-ryan-high.onnx" \
-            --pattern "en_US-ryan-high.onnx.json" \
+            --pattern "en_US-ryan-medium.onnx" \
+            --pattern "en_US-ryan-medium.onnx.json" \
             --dir build/piper
 
           echo "Downloaded Piper files:"
