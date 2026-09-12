@@ -642,7 +642,7 @@ jobs:
 
         with:
 
-          name: PiperTTS-RyanMedium
+          name: PiperTTS-RyanHigh
 
           path: PiperTTS-RyanHigh.apk
 
