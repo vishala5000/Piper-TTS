@@ -5,7 +5,7 @@ from pathlib import Path
 import onnx
 
 
-def load_config(model_path):
+def load_config(model_path: Path):
     json_path = Path(str(model_path) + ".json")
 
     if not json_path.exists():
@@ -13,40 +13,21 @@ def load_config(model_path):
             f"Missing Piper config: {json_path}"
         )
 
-    with open(
-        json_path,
-        "r",
-        encoding="utf-8"
-    ) as f:
+    with open(json_path, "r", encoding="utf-8") as f:
         return json.load(f)
 
 
-def generate_tokens(config, output):
+def generate_tokens(config, output_path: Path):
+    phoneme_id_map = config["phoneme_id_map"]
 
-    phoneme_map = config["phoneme_id_map"]
-
-    with open(
-        output,
-        "w",
-        encoding="utf-8"
-    ) as f:
-
-        for phoneme, ids in phoneme_map.items():
-
-            if not ids:
-                continue
-
-            f.write(
-                f"{phoneme} {ids[0]}\n"
-            )
+    with open(output_path, "w", encoding="utf-8") as f:
+        for phoneme, ids in phoneme_id_map.items():
+            if ids:
+                f.write(f"{phoneme} {ids[0]}\n")
 
 
-def add_metadata(model_path, config):
-
-    model = onnx.load(
-        str(model_path),
-        load_external_data=True
-    )
+def add_metadata(model_path: Path, config):
+    model = onnx.load(str(model_path))
 
     metadata = {
         "model_type": "vits",
@@ -55,9 +36,7 @@ def add_metadata(model_path, config):
         "voice": config["espeak"]["voice"],
         "has_espeak": "1",
         "n_speakers": str(config["num_speakers"]),
-        "sample_rate": str(
-            config["audio"]["sample_rate"]
-        )
+        "sample_rate": str(config["audio"]["sample_rate"]),
     }
 
     existing = {
@@ -66,7 +45,6 @@ def add_metadata(model_path, config):
     }
 
     for key, value in metadata.items():
-
         if key in existing:
             continue
 
@@ -74,21 +52,16 @@ def add_metadata(model_path, config):
         prop.key = key
         prop.value = str(value)
 
-    onnx.save(
-        model,
-        str(model_path),
-        save_as_external_data=False
-    )
+    onnx.save(model, str(model_path))
 
 
 def main():
 
     if len(sys.argv) != 3:
-
         print(
-            "Usage: prepare_piper.py MODEL OUTPUT_DIR"
+            "Usage: python prepare_piper.py "
+            "MODEL OUTPUT_DIR"
         )
-
         sys.exit(1)
 
     model_path = Path(sys.argv[1])
@@ -101,8 +74,17 @@ def main():
 
     config = load_config(model_path)
 
-    tokens_path =
+    output_model = (
+        output_dir / model_path.name
+    )
+
+    output_model.write_bytes(
+        model_path.read_bytes()
+    )
+
+    tokens_path = (
         output_dir / "tokens.txt"
+    )
 
     generate_tokens(
         config,
@@ -110,21 +92,12 @@ def main():
     )
 
     add_metadata(
-        model_path,
+        output_model,
         config
     )
 
-    destination =
-        output_dir / model_path.name
-
-    if model_path.resolve() != destination.resolve():
-
-        destination.write_bytes(
-            model_path.read_bytes()
-        )
-
-    print("Piper model prepared successfully")
-    print(f"Model: {destination}")
+    print("Piper model prepared")
+    print(f"Model: {output_model}")
     print(f"Tokens: {tokens_path}")
 
 
