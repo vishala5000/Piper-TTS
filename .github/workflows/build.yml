@@ -74,6 +74,7 @@ jobs:
             "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/espeak-ng-data.tar.bz2"
 
           tar -xjf espeak-ng-data.tar.bz2
+
           rm espeak-ng-data.tar.bz2
 
           test -d espeak-ng-data
@@ -92,6 +93,8 @@ jobs:
 
       - name: Find sherpa native libraries
         run: |
+          echo "Searching for native libraries..."
+
           find build/sherpa-onnx \
             -type f \
             -name "*.so" \
@@ -109,9 +112,13 @@ jobs:
             exit 1
           fi
 
+          echo "Using ARM64 directory:"
+          echo "$ARM64_DIR"
+
           cp "$ARM64_DIR"/*.so \
             app/src/main/jniLibs/arm64-v8a/
 
+          echo "Copied native libraries:"
           ls -lh \
             app/src/main/jniLibs/arm64-v8a/
 
@@ -122,7 +129,38 @@ jobs:
 
           curl --fail --location --retry 5 \
             -o app/src/main/java/com/k2fsa/sherpa/onnx/Tts.kt \
-            "https://raw.githubusercontent.com/k2-fsa/sherpa-onnx/v1.13.8/kotlin-api/Tts.kt"
+            "https://raw.githubusercontent.com/k2-fsa/sherpa-onnx/v1.13.8/sherpa-onnx/kotlin-api/Tts.kt"
+
+          test -s \
+            app/src/main/java/com/k2fsa/sherpa/onnx/Tts.kt
+
+          echo "Downloaded Tts.kt:"
+          ls -lh \
+            app/src/main/java/com/k2fsa/sherpa/onnx/Tts.kt
+
+          echo "First lines:"
+          head -n 10 \
+            app/src/main/java/com/k2fsa/sherpa/onnx/Tts.kt
+
+      - name: Verify project files
+        run: |
+          echo "Checking required files..."
+
+          test -f settings.gradle.kts
+          test -f build.gradle.kts
+          test -f gradle.properties
+
+          test -f app/build.gradle.kts
+          test -f app/src/main/AndroidManifest.xml
+          test -f app/src/main/java/com/vishal/pipertts/MainActivity.kt
+
+          test -f app/src/main/java/com/k2fsa/sherpa/onnx/Tts.kt
+
+          test -f app/src/main/assets/ryan/en_US-ryan-high.onnx
+          test -f app/src/main/assets/ryan/tokens.txt
+          test -d app/src/main/assets/ryan/espeak-ng-data
+
+          echo "All required files found."
 
       - name: Build APK
         run: |
@@ -133,6 +171,7 @@ jobs:
           test -f \
             app/build/outputs/apk/release/app-release.apk
 
+          echo "APK successfully created:"
           ls -lh \
             app/build/outputs/apk/release/app-release.apk
 
@@ -141,6 +180,8 @@ jobs:
           cp \
             app/build/outputs/apk/release/app-release.apk \
             PiperTTS-RyanHigh.apk
+
+          ls -lh PiperTTS-RyanHigh.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
