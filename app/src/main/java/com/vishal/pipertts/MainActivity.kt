@@ -4,34 +4,46 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.ContentValues
 import android.content.Context
-import android.media.AudioAttributes
-import android.media.AudioFormat
-import android.media.AudioTrack
+import android.media.MediaPlayer
 import android.os.Bundle
 import android.os.Environment
 import android.provider.MediaStore
-import android.view.inputmethod.InputMethodManager
+import android.view.View
 import android.widget.Button
 import android.widget.EditText
 import android.widget.SeekBar
 import android.widget.TextView
-import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import com.k2fsa.sherpa.onnx.GenerationConfig
 import com.k2fsa.sherpa.onnx.OfflineTts
 import com.k2fsa.sherpa.onnx.OfflineTtsConfig
 import com.k2fsa.sherpa.onnx.OfflineTtsModelConfig
 import com.k2fsa.sherpa.onnx.OfflineTtsVitsModelConfig
+import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
 import java.io.IOException
-import java.io.OutputStream
-import java.util.concurrent.Executors
+import java.util.Locale
+import kotlin.concurrent.thread
+
 
 class MainActivity : AppCompatActivity() {
+
+    companion object {
+        private const val MODEL_NAME = "en_US-ryan-medium.onnx"
+        private const val ASSET_ROOT = "ryan"
+
+        private const val PREPARE_VERSION = "ryan-medium-v1"
+
+        private const val DEFAULT_SPEED = 1.0f
+        private const val MIN_SPEED = 0.50f
+        private const val MAX_SPEED = 2.00f
+    }
 
     private lateinit var textInput: EditText
     private lateinit var characterCount: TextView
     private lateinit var speedLabel: TextView
-    private lateinit var statusText: TextView
+    private lateinit var speedSeekBar: SeekBar
 
     private lateinit var generateButton: Button
     private lateinit var playButton: Button
@@ -39,90 +51,59 @@ class MainActivity : AppCompatActivity() {
     private lateinit var saveButton: Button
     private lateinit var copyButton: Button
 
+    private lateinit var statusText: TextView
+
     private var tts: OfflineTts? = null
-
-    private var generatedSamples: FloatArray? = null
-    private var generatedSampleRate = 22050
-
-    private var audioTrack: AudioTrack? = null
-
-    private val executor =
-        Executors.newSingleThreadExecutor()
+    private var generatedWav: File? = null
+    private var mediaPlayer: MediaPlayer? = null
 
     @Volatile
-    private var generating = false
+    private var isGenerating = false
 
-    override fun onCreate(
-        savedInstanceState: Bundle?
-    ) {
+
+    override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        setContentView(
-            R.layout.activity_main
-        )
+        setContentView(R.layout.activity_main)
 
         initializeViews()
-        initializeTextCounter()
-        initializeSpeed()
+        setupListeners()
 
-        generateButton.setOnClickListener {
-            generateSpeech()
-        }
+        setUiEnabled(false)
 
-        playButton.setOnClickListener {
-            playAudio()
-        }
+        statusText.text = "Preparing offline voice..."
 
-        stopButton.setOnClickListener {
-            stopAudio()
-        }
-
-        saveButton.setOnClickListener {
-            saveAudio()
-        }
-
-        copyButton.setOnClickListener {
-            copyText()
-        }
-
-        initializeTts()
+        prepareTtsInBackground()
     }
+
 
     private fun initializeViews() {
 
-        textInput =
-            findViewById(R.id.textInput)
+        textInput = findViewById(R.id.textInput)
+        characterCount = findViewById(R.id.characterCount)
 
-        characterCount =
-            findViewById(R.id.characterCount)
+        speedLabel = findViewById(R.id.speedLabel)
+        speedSeekBar = findViewById(R.id.speedSeekBar)
 
-        speedLabel =
-            findViewById(R.id.speedLabel)
+        generateButton = findViewById(R.id.generateButton)
+        playButton = findViewById(R.id.playButton)
+        stopButton = findViewById(R.id.stopButton)
+        saveButton = findViewById(R.id.saveButton)
+        copyButton = findViewById(R.id.copyButton)
 
-        statusText =
-            findViewById(R.id.statusText)
+        statusText = findViewById(R.id.statusText)
 
-        generateButton =
-            findViewById(R.id.generateButton)
+        updateCharacterCount()
 
-        playButton =
-            findViewById(R.id.playButton)
+        updateSpeedLabel()
 
-        stopButton =
-            findViewById(R.id.stopButton)
-
-        saveButton =
-            findViewById(R.id.saveButton)
-
-        copyButton =
-            findViewById(R.id.copyButton)
-
-        generateButton.isEnabled = false
         playButton.isEnabled = false
+        stopButton.isEnabled = false
         saveButton.isEnabled = false
     }
 
-    private fun initializeTextCounter() {
+
+    private fun setupListeners() {
 
         textInput.addTextChangedListener(
             object : android.text.TextWatcher {
@@ -141,8 +122,7 @@ class MainActivity : AppCompatActivity() {
                     before: Int,
                     count: Int
                 ) {
-                    characterCount.text =
-                        "${s?.length ?: 0} / 5000"
+                    updateCharacterCount()
                 }
 
                 override fun afterTextChanged(
@@ -152,31 +132,16 @@ class MainActivity : AppCompatActivity() {
             }
         )
 
-        characterCount.text =
-            "${textInput.text.length} / 5000"
-    }
 
-    private fun initializeSpeed() {
-
-        val seekBar =
-            findViewById<SeekBar>(
-                R.id.speedSeekBar
-            )
-
-        seekBar.progress = 50
-
-        updateSpeedLabel(50)
-
-        seekBar.setOnSeekBarChangeListener(
-            object :
-                SeekBar.OnSeekBarChangeListener {
+        speedSeekBar.setOnSeekBarChangeListener(
+            object : SeekBar.OnSeekBarChangeListener {
 
                 override fun onProgressChanged(
                     seekBar: SeekBar?,
                     progress: Int,
                     fromUser: Boolean
                 ) {
-                    updateSpeedLabel(progress)
+                    updateSpeedLabel()
                 }
 
                 override fun onStartTrackingTouch(
@@ -190,750 +155,853 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         )
+
+
+        generateButton.setOnClickListener {
+            generateSpeech()
+        }
+
+
+        playButton.setOnClickListener {
+            playGeneratedAudio()
+        }
+
+
+        stopButton.setOnClickListener {
+            stopPlayback()
+        }
+
+
+        saveButton.setOnClickListener {
+            saveGeneratedWav()
+        }
+
+
+        copyButton.setOnClickListener {
+            copyText()
+        }
     }
 
-    private fun updateSpeedLabel(
-        progress: Int
-    ) {
 
-        val speed =
-            0.50f +
-                progress / 100f
+    private fun updateCharacterCount() {
+
+        val count = textInput.text?.length ?: 0
+
+        characterCount.text =
+            String.format(
+                Locale.US,
+                "%d / 5000",
+                count
+            )
+    }
+
+
+    private fun updateSpeedLabel() {
+
+        val speed = getSelectedSpeed()
 
         speedLabel.text =
             String.format(
-                "Speed: %.2fx",
+                Locale.US,
+                "Speed  %.2fx",
                 speed
             )
     }
 
-    private fun getSpeed(): Float {
 
-        val progress =
-            findViewById<SeekBar>(
-                R.id.speedSeekBar
-            ).progress
+    private fun getSelectedSpeed(): Float {
 
-        return 0.50f +
-            progress / 100f
+        val progress = speedSeekBar.progress
+
+        /*
+         * SeekBar:
+         * 50  = 0.50x
+         * 100 = 1.00x
+         * 150 = 1.50x
+         *
+         * The XML currently has max=150.
+         */
+
+        return (progress.coerceIn(50, 150) / 100.0f)
+            .coerceIn(
+                MIN_SPEED,
+                MAX_SPEED
+            )
     }
 
-    private fun initializeTts() {
 
-        statusText.text =
-            "Loading Piper TTS model..."
+    private fun setUiEnabled(enabled: Boolean) {
 
-        generateButton.isEnabled = false
-        playButton.isEnabled = false
-        saveButton.isEnabled = false
+        generateButton.isEnabled = enabled
+        speedSeekBar.isEnabled = enabled
+        textInput.isEnabled = enabled
+        copyButton.isEnabled = true
 
-        executor.execute {
+        playButton.isEnabled =
+            enabled && generatedWav?.exists() == true
+
+        saveButton.isEnabled =
+            enabled && generatedWav?.exists() == true
+
+        stopButton.isEnabled =
+            mediaPlayer?.isPlaying == true
+    }
+
+
+    private fun prepareTtsInBackground() {
+
+        thread {
 
             try {
 
-                val modelPath =
-                    "ryan/en_US-ryan-medium.onnx"
+                val modelDirectory =
+                    preparePiperFiles()
 
-                val tokensPath =
-                    "ryan/tokens.txt"
+                val modelFile =
+                    File(
+                        modelDirectory,
+                        MODEL_NAME
+                    )
 
-                val dataPath =
-                    "ryan/espeak-ng-data"
+                val tokensFile =
+                    File(
+                        modelDirectory,
+                        "tokens.txt"
+                    )
 
-                verifyAsset(modelPath)
-                verifyAsset(tokensPath)
-                verifyAsset(dataPath)
+                val dataDir =
+                    File(
+                        modelDirectory,
+                        "espeak-ng-data"
+                    )
 
-                runOnUiThread {
-                    statusText.text =
-                        "Loading Ryan Medium..."
+                if (!modelFile.isFile) {
+                    throw IOException(
+                        "Piper model was not copied:\n${modelFile.absolutePath}"
+                    )
                 }
+
+                if (!tokensFile.isFile) {
+                    throw IOException(
+                        "tokens.txt was not copied:\n${tokensFile.absolutePath}"
+                    )
+                }
+
+                if (!dataDir.isDirectory) {
+                    throw IOException(
+                        "espeak-ng-data was not copied:\n${dataDir.absolutePath}"
+                    )
+                }
+
+
+                /*
+                 * IMPORTANT:
+                 *
+                 * sherpa-onnx Piper VITS requires these to be
+                 * real filesystem paths.
+                 *
+                 * Do NOT use:
+                 *
+                 * assets/ryan/...
+                 *
+                 * for model, tokens or dataDir.
+                 */
 
                 val vitsConfig =
                     OfflineTtsVitsModelConfig(
-                        model = modelPath,
-                        tokens = tokensPath,
-                        dataDir = dataPath,
-                        noiseScale = 0.667f,
-                        noiseScaleW = 0.8f,
-                        lengthScale = 1.0f
+                        model = modelFile.absolutePath,
+                        tokens = tokensFile.absolutePath,
+                        dataDir = dataDir.absolutePath
                     )
+
 
                 val modelConfig =
                     OfflineTtsModelConfig(
                         vits = vitsConfig,
                         numThreads = 2,
-                        debug = false,
-                        provider = "cpu"
+                        debug = false
                     )
+
 
                 val config =
                     OfflineTtsConfig(
                         model = modelConfig
                     )
 
-                val engine =
+
+                val createdTts =
                     OfflineTts(
-                        assets,
-                        config
+                        config = config
                     )
 
-                val sampleRate =
-                    engine.sampleRate()
 
-                tts = engine
+                tts = createdTts
 
-                generatedSampleRate =
-                    sampleRate
 
                 runOnUiThread {
 
                     statusText.text =
-                        "Ready • Ryan Medium • ${sampleRate} Hz"
+                        "Ready • Ryan Medium • Fully Offline"
 
-                    generateButton.isEnabled =
-                        true
+                    setUiEnabled(true)
                 }
 
             } catch (e: Throwable) {
 
                 val message =
-                    getErrorMessage(e)
+                    e.message
+                        ?: e.javaClass.simpleName
 
                 runOnUiThread {
 
                     statusText.text =
-                        "Piper TTS failed\n\n$message"
+                        "TTS initialization failed:\n$message"
 
-                    generateButton.isEnabled =
-                        false
-
-                    playButton.isEnabled =
-                        false
-
-                    saveButton.isEnabled =
-                        false
-
-                    Toast.makeText(
-                        this,
-                        "Piper TTS failed to load",
-                        Toast.LENGTH_LONG
-                    ).show()
+                    setUiEnabled(false)
                 }
             }
         }
     }
 
-    private fun verifyAsset(
-        path: String
+
+    private fun preparePiperFiles(): File {
+
+        val baseDirectory =
+            File(
+                filesDir,
+                "piper"
+            )
+
+        val markerFile =
+            File(
+                baseDirectory,
+                ".prepared"
+            )
+
+
+        /*
+         * If the app was previously installed with
+         * Ryan High, Medium, etc., remove the old
+         * files and prepare the correct model again.
+         */
+
+        val needsPreparation =
+            !markerFile.isFile ||
+            markerFile.readText(
+                Charsets.UTF_8
+            ).trim() != PREPARE_VERSION ||
+            !File(
+                baseDirectory,
+                MODEL_NAME
+            ).isFile ||
+            !File(
+                baseDirectory,
+                "tokens.txt"
+            ).isFile ||
+            !File(
+                baseDirectory,
+                "espeak-ng-data"
+            ).isDirectory
+
+
+        if (needsPreparation) {
+
+            if (baseDirectory.exists()) {
+                baseDirectory.deleteRecursively()
+            }
+
+            baseDirectory.mkdirs()
+
+
+            copyAssetFile(
+                "$ASSET_ROOT/$MODEL_NAME",
+                File(
+                    baseDirectory,
+                    MODEL_NAME
+                )
+            )
+
+
+            copyAssetFile(
+                "$ASSET_ROOT/tokens.txt",
+                File(
+                    baseDirectory,
+                    "tokens.txt"
+                )
+            )
+
+
+            copyAssetDirectory(
+                "$ASSET_ROOT/espeak-ng-data",
+                File(
+                    baseDirectory,
+                    "espeak-ng-data"
+                )
+            )
+
+
+            markerFile.writeText(
+                PREPARE_VERSION,
+                Charsets.UTF_8
+            )
+        }
+
+
+        return baseDirectory
+    }
+
+
+    private fun copyAssetDirectory(
+        assetPath: String,
+        destination: File
     ) {
 
-        try {
+        val children =
+            assets.list(assetPath)
+                ?: emptyArray()
 
-            assets.open(path).use {
-                return
-            }
 
-        } catch (_: IOException) {
+        if (children.isEmpty()) {
+
+            copyAssetFile(
+                assetPath,
+                destination
+            )
+
+            return
         }
 
-        try {
 
-            val children =
-                assets.list(path)
+        if (!destination.exists()) {
+            destination.mkdirs()
+        }
 
-            if (
-                children == null ||
-                children.isEmpty()
-            ) {
-                throw IOException(
-                    "Missing asset: $path"
+
+        for (child in children) {
+
+            val childAssetPath =
+                "$assetPath/$child"
+
+            val childDestination =
+                File(
+                    destination,
+                    child
+                )
+
+
+            val childChildren =
+                assets.list(childAssetPath)
+                    ?: emptyArray()
+
+
+            if (childChildren.isEmpty()) {
+
+                copyAssetFile(
+                    childAssetPath,
+                    childDestination
+                )
+
+            } else {
+
+                copyAssetDirectory(
+                    childAssetPath,
+                    childDestination
                 )
             }
-
-        } catch (e: Exception) {
-
-            throw IOException(
-                "Missing asset: $path",
-                e
-            )
         }
     }
 
-    private fun getErrorMessage(
-        throwable: Throwable
-    ): String {
 
-        val result =
-            StringBuilder()
+    private fun copyAssetFile(
+        assetPath: String,
+        destination: File
+    ) {
 
-        result.append(
-            throwable.javaClass.simpleName
-        )
+        destination.parentFile?.mkdirs()
 
-        result.append("\n")
+        assets.open(assetPath).use { input ->
 
-        result.append(
-            throwable.message
-                ?: "Unknown error"
-        )
+            FileOutputStream(
+                destination
+            ).use { output ->
 
-        var cause =
-            throwable.cause
+                val buffer =
+                    ByteArray(
+                        32 * 1024
+                    )
 
-        var count = 0
+                while (true) {
 
-        while (
-            cause != null &&
-            count < 3
-        ) {
+                    val count =
+                        input.read(buffer)
 
-            result.append(
-                "\n\nCaused by: "
-            )
+                    if (count <= 0) {
+                        break
+                    }
 
-            result.append(
-                cause.javaClass.simpleName
-            )
+                    output.write(
+                        buffer,
+                        0,
+                        count
+                    )
+                }
 
-            result.append(
-                "\n"
-            )
-
-            result.append(
-                cause.message
-                    ?: "Unknown cause"
-            )
-
-            cause =
-                cause.cause
-
-            count++
+                output.flush()
+            }
         }
-
-        return result.toString()
     }
+
 
     private fun generateSpeech() {
 
-        if (generating) {
+        val inputText =
+            textInput.text
+                ?.toString()
+                ?.trim()
+                ?: ""
+
+
+        if (inputText.isEmpty()) {
+
+            statusText.text =
+                "Enter some text first."
+
+            textInput.requestFocus()
+
             return
         }
 
-        val engine =
+
+        if (inputText.length > 5000) {
+
+            statusText.text =
+                "Text is too long."
+
+            return
+        }
+
+
+        val currentTts =
             tts
 
-        if (engine == null) {
+        if (currentTts == null) {
 
-            Toast.makeText(
-                this,
-                "Piper TTS is still loading",
-                Toast.LENGTH_SHORT
-            ).show()
+            statusText.text =
+                "TTS is still preparing."
 
             return
         }
 
-        val text =
-            textInput.text
-                .toString()
-                .trim()
 
-        if (text.isEmpty()) {
-
-            Toast.makeText(
-                this,
-                "Enter some text first",
-                Toast.LENGTH_SHORT
-            ).show()
-
+        if (isGenerating) {
             return
         }
 
-        hideKeyboard()
 
-        generating = true
+        isGenerating = true
 
-        generateButton.isEnabled = false
-        playButton.isEnabled = false
-        saveButton.isEnabled = false
+        stopPlayback()
 
-        statusText.text =
-            "Generating speech..."
+        generatedWav = null
+
+        runOnUiThread {
+
+            generateButton.isEnabled = false
+            playButton.isEnabled = false
+            saveButton.isEnabled = false
+            stopButton.isEnabled = false
+
+            statusText.text =
+                "Generating speech..."
+        }
+
 
         val speed =
-            getSpeed()
+            getSelectedSpeed()
 
-        executor.execute {
+
+        thread {
+
+            var audio:
+                com.k2fsa.sherpa.onnx.GeneratedAudio? =
+                null
+
 
             try {
 
-                val generation =
+                val outputFile =
+                    File(
+                        cacheDir,
+                        "piper_output.wav"
+                    )
+
+
+                if (outputFile.exists()) {
+                    outputFile.delete()
+                }
+
+
+                val generationConfig =
                     GenerationConfig(
-                        silenceScale = 0.2f,
+                        sid = 0,
                         speed = speed,
-                        sid = 0
+                        silenceScale = 0.2f
                     )
 
-                val audio =
-                    engine.generateWithConfig(
-                        text,
-                        generation
+
+                audio =
+                    currentTts.generateWithConfigAndCallback(
+                        text = inputText,
+                        config = generationConfig,
+                        callback = { 1 }
                     )
 
-                generatedSamples =
-                    audio.samples
 
-                generatedSampleRate =
-                    audio.sampleRate
+                if (!audio.save(
+                        filename = outputFile.absolutePath
+                    )
+                ) {
 
-                val duration =
-                    audio.samples.size.toFloat() /
-                        audio.sampleRate
+                    throw IOException(
+                        "Failed to save generated WAV."
+                    )
+                }
+
+
+                if (!outputFile.isFile ||
+                    outputFile.length() <= 0
+                ) {
+
+                    throw IOException(
+                        "Generated WAV is empty."
+                    )
+                }
+
+
+                generatedWav =
+                    outputFile
+
 
                 runOnUiThread {
 
                     statusText.text =
                         String.format(
-                            "Ready • %.2f seconds",
-                            duration
+                            Locale.US,
+                            "Speech generated • %.2fx",
+                            speed
                         )
 
-                    playButton.isEnabled =
-                        true
-
-                    saveButton.isEnabled =
-                        true
+                    generateButton.isEnabled = true
+                    playButton.isEnabled = true
+                    saveButton.isEnabled = true
+                    stopButton.isEnabled = false
                 }
+
 
             } catch (e: Throwable) {
 
                 val message =
-                    getErrorMessage(e)
+                    e.message
+                        ?: e.javaClass.simpleName
+
 
                 runOnUiThread {
 
                     statusText.text =
-                        "Generation failed\n\n$message"
+                        "Generation failed:\n$message"
 
-                    Toast.makeText(
-                        this,
-                        "Speech generation failed",
-                        Toast.LENGTH_LONG
-                    ).show()
+                    generateButton.isEnabled = true
+                    playButton.isEnabled = false
+                    saveButton.isEnabled = false
+                    stopButton.isEnabled = false
                 }
 
             } finally {
 
-                generating = false
+                audio = null
 
-                runOnUiThread {
-                    generateButton.isEnabled =
-                        tts != null
-                }
+                isGenerating = false
             }
         }
     }
 
-    private fun playAudio() {
 
-        val samples =
-            generatedSamples
-                ?: return
+    private fun playGeneratedAudio() {
 
-        stopAudio()
+        val wav =
+            generatedWav
 
-        try {
 
-            val minBuffer =
-                AudioTrack.getMinBufferSize(
-                    generatedSampleRate,
-                    AudioFormat.CHANNEL_OUT_MONO,
-                    AudioFormat.ENCODING_PCM_FLOAT
-                )
-
-            audioTrack =
-                AudioTrack.Builder()
-                    .setAudioAttributes(
-                        AudioAttributes.Builder()
-                            .setUsage(
-                                AudioAttributes.USAGE_MEDIA
-                            )
-                            .setContentType(
-                                AudioAttributes.CONTENT_TYPE_SPEECH
-                            )
-                            .build()
-                    )
-                    .setAudioFormat(
-                        AudioFormat.Builder()
-                            .setSampleRate(
-                                generatedSampleRate
-                            )
-                            .setEncoding(
-                                AudioFormat.ENCODING_PCM_FLOAT
-                            )
-                            .setChannelMask(
-                                AudioFormat.CHANNEL_OUT_MONO
-                            )
-                            .build()
-                    )
-                    .setBufferSizeInBytes(
-                        maxOf(
-                            minBuffer,
-                            samples.size * 4
-                        )
-                    )
-                    .setTransferMode(
-                        AudioTrack.MODE_STATIC
-                    )
-                    .build()
-
-            audioTrack?.write(
-                samples,
-                0,
-                samples.size,
-                AudioTrack.WRITE_BLOCKING
-            )
-
-            audioTrack?.play()
+        if (wav == null ||
+            !wav.isFile
+        ) {
 
             statusText.text =
-                "Playing"
-
-        } catch (e: Throwable) {
-
-            statusText.text =
-                "Playback failed\n\n" +
-                    getErrorMessage(e)
-        }
-    }
-
-    private fun stopAudio() {
-
-        try {
-            audioTrack?.stop()
-        } catch (_: Throwable) {
-        }
-
-        try {
-            audioTrack?.release()
-        } catch (_: Throwable) {
-        }
-
-        audioTrack = null
-    }
-
-    private fun saveAudio() {
-
-        val samples =
-            generatedSamples
-
-        if (samples == null) {
-
-            Toast.makeText(
-                this,
-                "Generate speech first",
-                Toast.LENGTH_SHORT
-            ).show()
+                "Generate speech first."
 
             return
         }
 
-        executor.execute {
 
-            var uri: android.net.Uri? = null
+        stopPlayback()
+
+
+        try {
+
+            mediaPlayer =
+                MediaPlayer().apply {
+
+                    setDataSource(
+                        wav.absolutePath
+                    )
+
+
+                    setOnPreparedListener {
+
+                        start()
+
+                        runOnUiThread {
+
+                            statusText.text =
+                                "Playing..."
+                            stopButton.isEnabled =
+                                true
+                        }
+                    }
+
+
+                    setOnCompletionListener {
+
+                        runOnUiThread {
+
+                            statusText.text =
+                                "Playback finished."
+
+                            stopButton.isEnabled =
+                                false
+                        }
+
+                        release()
+
+                        mediaPlayer = null
+                    }
+
+
+                    setOnErrorListener {
+                        _, _, _ ->
+
+                        runOnUiThread {
+
+                            statusText.text =
+                                "Playback error."
+
+                            stopButton.isEnabled =
+                                false
+                        }
+
+                        release()
+
+                        mediaPlayer = null
+
+                        true
+                    }
+
+
+                    prepareAsync()
+                }
+
+
+        } catch (e: Throwable) {
+
+            statusText.text =
+                "Playback failed:\n${e.message}"
+
+            mediaPlayer?.release()
+
+            mediaPlayer = null
+        }
+    }
+
+
+    private fun stopPlayback() {
+
+        val player =
+            mediaPlayer
+
+
+        if (player != null) {
 
             try {
 
-                val fileName =
-                    "piper_${System.currentTimeMillis()}.wav"
+                if (player.isPlaying) {
+                    player.stop()
+                }
+
+            } catch (_: Throwable) {
+            }
+
+
+            try {
+                player.release()
+            } catch (_: Throwable) {
+            }
+
+            mediaPlayer = null
+        }
+
+
+        if (!isFinishing) {
+
+            runOnUiThread {
+
+                stopButton.isEnabled =
+                    false
+            }
+        }
+    }
+
+
+    private fun saveGeneratedWav() {
+
+        val source =
+            generatedWav
+
+
+        if (source == null ||
+            !source.isFile
+        ) {
+
+            statusText.text =
+                "Generate speech first."
+
+            return
+        }
+
+
+        thread {
+
+            try {
+
+                val filename =
+                    "Piper_${System.currentTimeMillis()}.wav"
+
+
+                val resolver =
+                    contentResolver
+
 
                 val values =
                     ContentValues().apply {
 
                         put(
-                            MediaStore.Downloads.DISPLAY_NAME,
-                            fileName
+                            MediaStore.MediaColumns.DISPLAY_NAME,
+                            filename
                         )
 
                         put(
-                            MediaStore.Downloads.MIME_TYPE,
+                            MediaStore.MediaColumns.MIME_TYPE,
                             "audio/wav"
                         )
 
                         put(
-                            MediaStore.Downloads.RELATIVE_PATH,
-                            Environment.DIRECTORY_DOWNLOADS +
-                                "/PiperTTS"
+                            MediaStore.MediaColumns.RELATIVE_PATH,
+                            Environment.DIRECTORY_MUSIC +
+                                "/Piper TTS"
                         )
                     }
 
-                uri =
-                    contentResolver.insert(
-                        MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+
+                val uri =
+                    resolver.insert(
+                        MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
                         values
                     )
-                        ?: throw IOException(
-                            "Could not create WAV file"
-                        )
 
-                contentResolver
-                    .openOutputStream(uri)
-                    ?.use { output ->
 
-                        writeWav(
-                            output,
-                            samples,
-                            generatedSampleRate
-                        )
+                if (uri == null) {
+
+                    throw IOException(
+                        "Could not create output file."
+                    )
+                }
+
+
+                try {
+
+                    resolver.openOutputStream(uri).use { output ->
+
+                        if (output == null) {
+
+                            throw IOException(
+                                "Could not open output stream."
+                            )
+                        }
+
+
+                        FileInputStream(
+                            source
+                        ).use { input ->
+
+                            input.copyTo(
+                                output
+                            )
+                        }
                     }
-                    ?: throw IOException(
-                        "Could not open WAV file"
+
+                } catch (e: Throwable) {
+
+                    resolver.delete(
+                        uri,
+                        null,
+                        null
                     )
 
-                runOnUiThread {
-
-                    Toast.makeText(
-                        this,
-                        "Saved to Downloads/PiperTTS",
-                        Toast.LENGTH_LONG
-                    ).show()
+                    throw e
                 }
 
-            } catch (e: Throwable) {
-
-                if (uri != null) {
-
-                    try {
-                        contentResolver.delete(
-                            uri,
-                            null,
-                            null
-                        )
-                    } catch (_: Throwable) {
-                    }
-                }
 
                 runOnUiThread {
 
                     statusText.text =
-                        "Save failed\n\n" +
-                            getErrorMessage(e)
+                        "Saved to Music/Piper TTS/$filename"
+                }
+
+
+            } catch (e: Throwable) {
+
+                runOnUiThread {
+
+                    statusText.text =
+                        "Save failed:\n${e.message}"
                 }
             }
         }
     }
 
-    private fun writeWav(
-        output: OutputStream,
-        samples: FloatArray,
-        sampleRate: Int
-    ) {
-
-        val pcmSize =
-            samples.size * 2
-
-        val byteRate =
-            sampleRate * 2
-
-        val header =
-            ByteArray(44)
-
-        header[0] =
-            'R'.code.toByte()
-
-        header[1] =
-            'I'.code.toByte()
-
-        header[2] =
-            'F'.code.toByte()
-
-        header[3] =
-            'F'.code.toByte()
-
-        writeIntLE(
-            header,
-            4,
-            36 + pcmSize
-        )
-
-        header[8] =
-            'W'.code.toByte()
-
-        header[9] =
-            'A'.code.toByte()
-
-        header[10] =
-            'V'.code.toByte()
-
-        header[11] =
-            'E'.code.toByte()
-
-        header[12] =
-            'f'.code.toByte()
-
-        header[13] =
-            'm'.code.toByte()
-
-        header[14] =
-            't'.code.toByte()
-
-        header[15] =
-            ' '.code.toByte()
-
-        writeIntLE(
-            header,
-            16,
-            16
-        )
-
-        writeShortLE(
-            header,
-            20,
-            1
-        )
-
-        writeShortLE(
-            header,
-            22,
-            1
-        )
-
-        writeIntLE(
-            header,
-            24,
-            sampleRate
-        )
-
-        writeIntLE(
-            header,
-            28,
-            byteRate
-        )
-
-        writeShortLE(
-            header,
-            32,
-            2
-        )
-
-        writeShortLE(
-            header,
-            34,
-            16
-        )
-
-        header[36] =
-            'd'.code.toByte()
-
-        header[37] =
-            'a'.code.toByte()
-
-        header[38] =
-            't'.code.toByte()
-
-        header[39] =
-            'a'.code.toByte()
-
-        writeIntLE(
-            header,
-            40,
-            pcmSize
-        )
-
-        output.write(header)
-
-        val buffer =
-            ByteArray(8192)
-
-        var index = 0
-
-        while (
-            index < samples.size
-        ) {
-
-            val count =
-                minOf(
-                    buffer.size / 2,
-                    samples.size - index
-                )
-
-            for (i in 0 until count) {
-
-                val sample =
-                    samples[index + i]
-                        .coerceIn(-1f, 1f)
-
-                val value =
-                    (sample * 32767f)
-                        .toInt()
-                        .toShort()
-
-                buffer[i * 2] =
-                    (value.toInt() and 0xFF)
-                        .toByte()
-
-                buffer[i * 2 + 1] =
-                    ((value.toInt() shr 8) and 0xFF)
-                        .toByte()
-            }
-
-            output.write(
-                buffer,
-                0,
-                count * 2
-            )
-
-            index += count
-        }
-    }
-
-    private fun writeIntLE(
-        buffer: ByteArray,
-        offset: Int,
-        value: Int
-    ) {
-
-        buffer[offset] =
-            (value and 0xFF).toByte()
-
-        buffer[offset + 1] =
-            ((value shr 8) and 0xFF).toByte()
-
-        buffer[offset + 2] =
-            ((value shr 16) and 0xFF).toByte()
-
-        buffer[offset + 3] =
-            ((value shr 24) and 0xFF).toByte()
-    }
-
-    private fun writeShortLE(
-        buffer: ByteArray,
-        offset: Int,
-        value: Int
-    ) {
-
-        buffer[offset] =
-            (value and 0xFF).toByte()
-
-        buffer[offset + 1] =
-            ((value shr 8) and 0xFF).toByte()
-    }
 
     private fun copyText() {
 
         val text =
             textInput.text
-                .toString()
+                ?.toString()
+                ?.trim()
+                ?: ""
+
 
         if (text.isEmpty()) {
+
+            statusText.text =
+                "Nothing to copy."
+
             return
         }
+
 
         val clipboard =
             getSystemService(
                 Context.CLIPBOARD_SERVICE
             ) as ClipboardManager
+
 
         clipboard.setPrimaryClip(
             ClipData.newPlainText(
@@ -942,40 +1010,24 @@ class MainActivity : AppCompatActivity() {
             )
         )
 
-        Toast.makeText(
-            this,
-            "Text copied",
-            Toast.LENGTH_SHORT
-        ).show()
+
+        statusText.text =
+            "Text copied."
     }
 
-    private fun hideKeyboard() {
-
-        val imm =
-            getSystemService(
-                Context.INPUT_METHOD_SERVICE
-            ) as InputMethodManager
-
-        imm.hideSoftInputFromWindow(
-            textInput.windowToken,
-            0
-        )
-
-        textInput.clearFocus()
-    }
 
     override fun onDestroy() {
 
-        stopAudio()
+        stopPlayback()
+
 
         try {
             tts?.release()
         } catch (_: Throwable) {
         }
 
-        tts = null
 
-        executor.shutdownNow()
+        tts = null
 
         super.onDestroy()
     }
