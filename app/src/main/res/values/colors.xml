@@ -1,1 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
 
+<resources>
+
+    <color name="background">#0B0D10</color>
+    <color name="card">#15181D</color>
+    <color name="card2">#1C2026</color>
+
+    <color name="text_primary">#FFFFFF</color>
+    <color name="text_secondary">#A9B0BA</color>
+
+    <color name="accent">#6C63FF</color>
+    <color name="accent_dark">#5148D8</color>
+
+    <color name="button_text">#FFFFFF</color>
+
+</resources>
