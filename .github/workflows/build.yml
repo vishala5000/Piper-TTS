@@ -85,8 +85,8 @@ jobs:
       # IMPORTANT:
       # Your pipertts GitHub Release must contain:
       #
-      # en_US-ryan-medium.onnx
-      # en_US-ryan-medium.onnx.json
+      # en_US-ryan-high.onnx
+      # en_US-ryan-high.onnx.json
       # ============================================================
 
       - name: Download Ryan Medium Piper model
@@ -101,8 +101,8 @@ jobs:
 
           gh release download pipertts \
             --repo vishala5000/Piper-TTS \
-            --pattern "en_US-ryan-medium.onnx" \
-            --pattern "en_US-ryan-medium.onnx.json" \
+            --pattern "en_US-ryan-high.onnx" \
+            --pattern "en_US-ryan-high.onnx.json" \
             --dir build/piper
 
           echo ""
@@ -122,10 +122,10 @@ jobs:
           echo "========================================"
 
           test -f \
-            build/piper/en_US-ryan-medium.onnx
+            build/piper/en_US-ryan-high.onnx
 
           test -f \
-            build/piper/en_US-ryan-medium.onnx.json
+            build/piper/en_US-ryan-high.onnx.json
 
           echo ""
           echo "[OK] Ryan Medium model found."
@@ -136,7 +136,7 @@ jobs:
       #
       # Creates:
       #
-      # en_US-ryan-medium.onnx
+      # en_US-ryan-high.onnx
       # tokens.txt
       #
       # and adds sherpa-compatible metadata.
@@ -150,7 +150,7 @@ jobs:
           echo "========================================"
 
           python scripts/prepare_piper.py \
-            build/piper/en_US-ryan-medium.onnx \
+            build/piper/en_US-ryan-high.onnx \
             app/src/main/assets/ryan
 
           echo ""
@@ -170,7 +170,7 @@ jobs:
           echo "========================================"
 
           test -f \
-            app/src/main/assets/ryan/en_US-ryan-medium.onnx
+            app/src/main/assets/ryan/en_US-ryan-high.onnx
 
           test -f \
             app/src/main/assets/ryan/tokens.txt
@@ -483,7 +483,7 @@ jobs:
             "app/src/main/java/com/k2fsa/sherpa/onnx/Tts.kt"
 
           check_file \
-            "app/src/main/assets/ryan/en_US-ryan-medium.onnx"
+            "app/src/main/assets/ryan/en_US-ryan-high.onnx"
 
           check_file \
             "app/src/main/assets/ryan/tokens.txt"
