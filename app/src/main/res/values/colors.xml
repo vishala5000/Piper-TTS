@@ -2,16 +2,16 @@
 
 <resources>
 
-    <color name="background">#0B0D10</color>
-    <color name="card">#15181D</color>
-    <color name="card2">#1C2026</color>
+    <color name="background">#101114</color>
+    <color name="card_background">#191B20</color>
 
     <color name="text_primary">#FFFFFF</color>
-    <color name="text_secondary">#A9B0BA</color>
+    <color name="text_secondary">#A8ADB7</color>
 
-    <color name="accent">#6C63FF</color>
-    <color name="accent_dark">#5148D8</color>
+    <color name="button_background">#FFFFFF</color>
+    <color name="button_text">#101114</color>
 
-    <color name="button_text">#FFFFFF</color>
+    <color name="edit_background">#111318</color>
+    <color name="edit_stroke">#30343C</color>
 
 </resources>
