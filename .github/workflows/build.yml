@@ -12,8 +12,17 @@ jobs:
 
     steps:
 
+      # ============================================================
+      # CHECKOUT
+      # ============================================================
+
       - name: Checkout
         uses: actions/checkout@v4
+
+
+      # ============================================================
+      # JAVA 17
+      # ============================================================
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
@@ -21,26 +30,51 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+
+      # ============================================================
+      # PYTHON 3.11
+      # ============================================================
+
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
+
+      # ============================================================
+      # GRADLE 8.13
+      # ============================================================
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.13'
 
+
+      # ============================================================
+      # PYTHON DEPENDENCIES
+      # ============================================================
+
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           pip install onnx==1.17.0
+
+
+      # ============================================================
+      # CREATE DIRECTORIES
+      # ============================================================
 
       - name: Create required directories
         run: |
           mkdir -p build/piper
           mkdir -p app/src/main/assets/ryan
           mkdir -p app/src/main/jniLibs/arm64-v8a
+
+
+      # ============================================================
+      # DOWNLOAD RYAN HIGH MODEL
+      # ============================================================
 
       - name: Download Ryan High Piper model
         env:
@@ -52,12 +86,26 @@ jobs:
             --pattern "en_US-ryan-high.onnx.json" \
             --dir build/piper
 
+
+      # ============================================================
+      # VERIFY PIPER MODEL
+      # ============================================================
+
       - name: Verify downloaded Piper files
         run: |
+          echo "========================================"
+          echo "PIPER MODEL FILES"
+          echo "========================================"
+
           test -f build/piper/en_US-ryan-high.onnx
           test -f build/piper/en_US-ryan-high.onnx.json
 
           ls -lh build/piper
+
+
+      # ============================================================
+      # PREPARE PIPER MODEL
+      # ============================================================
 
       - name: Prepare Piper model
         run: |
@@ -65,10 +113,29 @@ jobs:
             build/piper/en_US-ryan-high.onnx \
             app/src/main/assets/ryan
 
+
+      # ============================================================
+      # VERIFY PREPARED MODEL
+      # ============================================================
+
       - name: Verify prepared Piper model
         run: |
+          echo "========================================"
+          echo "PREPARED MODEL"
+          echo "========================================"
+
           test -f app/src/main/assets/ryan/en_US-ryan-high.onnx
           test -f app/src/main/assets/ryan/tokens.txt
+
+          find app/src/main/assets/ryan \
+            -maxdepth 3 \
+            -type f \
+            -print
+
+
+      # ============================================================
+      # DOWNLOAD ESPEAK NG DATA
+      # ============================================================
 
       - name: Download eSpeak NG data
         run: |
@@ -76,17 +143,48 @@ jobs:
             https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/espeak-ng-data.tar.bz2 \
             -O /tmp/espeak-ng-data.tar.bz2
 
+          rm -rf /tmp/espeak-ng-data
+
+          mkdir -p /tmp/espeak-ng-data
+
           tar -xjf \
             /tmp/espeak-ng-data.tar.bz2 \
-            -C app/src/main/assets/ryan
+            -C /tmp/espeak-ng-data
+
+          if [ -d "/tmp/espeak-ng-data/espeak-ng-data" ]; then
+            cp -r \
+              /tmp/espeak-ng-data/espeak-ng-data \
+              app/src/main/assets/ryan/
+          else
+            find /tmp/espeak-ng-data \
+              -type d \
+              -name "espeak-ng-data" \
+              -exec cp -r {} app/src/main/assets/ryan/ \;
+          fi
 
           test -d app/src/main/assets/ryan/espeak-ng-data
+
+          echo "========================================"
+          echo "ESPEAK DATA READY"
+          echo "========================================"
+
+          find app/src/main/assets/ryan/espeak-ng-data \
+            -maxdepth 2 \
+            -type f \
+            | head -30
+
+
+      # ============================================================
+      # DOWNLOAD SHERPA-ONNX ANDROID LIBRARIES
+      # ============================================================
 
       - name: Download sherpa-onnx Android libraries
         run: |
           wget -q \
             https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-v1.13.8-android.tar.bz2 \
             -O /tmp/sherpa-onnx-android.tar.bz2
+
+          rm -rf /tmp/sherpa
 
           mkdir -p /tmp/sherpa
 
@@ -98,32 +196,149 @@ jobs:
             -path "*/arm64-v8a/*.so" \
             -exec cp {} app/src/main/jniLibs/arm64-v8a/ \;
 
+          echo "========================================"
+          echo "NATIVE LIBRARIES"
+          echo "========================================"
+
+          ls -lh app/src/main/jniLibs/arm64-v8a
+
+
+      # ============================================================
+      # DOWNLOAD SHERPA KOTLIN API
+      # ============================================================
+
       - name: Download sherpa Kotlin API
         run: |
           wget -q \
             https://raw.githubusercontent.com/k2-fsa/sherpa-onnx/v1.13.8/sherpa-onnx/kotlin-api/Tts.kt \
             -O app/src/main/java/com/vishal/pipertts/Tts.kt
 
+          test -f app/src/main/java/com/vishal/pipertts/Tts.kt
+
+          echo "Tts.kt downloaded successfully"
+
+
+      # ============================================================
+      # VERIFY NATIVE LIBRARIES
+      # ============================================================
+
       - name: Verify native libraries
         run: |
+          echo "========================================"
+          echo "VERIFYING NATIVE LIBRARIES"
+          echo "========================================"
+
           test -f app/src/main/jniLibs/arm64-v8a/libonnxruntime.so
           test -f app/src/main/jniLibs/arm64-v8a/libsherpa-onnx-c-api.so
           test -f app/src/main/jniLibs/arm64-v8a/libsherpa-onnx-cxx-api.so
           test -f app/src/main/jniLibs/arm64-v8a/libsherpa-onnx-jni.so
 
-          echo "Native libraries:"
-          ls -lh app/src/main/jniLibs/arm64-v8a
+          echo "All required native libraries exist."
+
+
+      # ============================================================
+      # SHOW PROJECT STRUCTURE
+      # ============================================================
 
       - name: Show project files
         run: |
           echo "========================================"
-          echo "PROJECT"
+          echo "PROJECT FILES"
           echo "========================================"
 
           find app/src/main \
-            -maxdepth 4 \
+            -maxdepth 6 \
             -type f \
             | sort
+
+
+      # ============================================================
+      # VERIFY IMPORTANT XML FILES
+      # ============================================================
+
+      - name: Verify Android resources
+        run: |
+          echo "========================================"
+          echo "ANDROID RESOURCE FILES"
+          echo "========================================"
+
+          find app/src/main/res \
+            -type f \
+            | sort
+
+          echo ""
+          echo "========================================"
+          echo "MANIFEST"
+          echo "========================================"
+
+          cat app/src/main/AndroidManifest.xml
+
+          echo ""
+          echo "========================================"
+          echo "STRINGS"
+          echo "========================================"
+
+          cat app/src/main/res/values/strings.xml
+
+          echo ""
+          echo "========================================"
+          echo "COLORS"
+          echo "========================================"
+
+          cat app/src/main/res/values/colors.xml
+
+          echo ""
+          echo "========================================"
+          echo "THEMES"
+          echo "========================================"
+
+          cat app/src/main/res/values/themes.xml
+
+
+      # ============================================================
+      # CHECK XML SYNTAX / RESOURCE NAMES
+      # ============================================================
+
+      - name: Check resource files
+        run: |
+          echo "========================================"
+          echo "CHECKING RESOURCE FILENAMES"
+          echo "========================================"
+
+          find app/src/main/res \
+            -type f \
+            -print0 \
+            | while IFS= read -r -d '' file; do
+                name=$(basename "$file")
+
+                case "$name" in
+                  *[A-Z]*)
+                    echo "ERROR: Invalid Android resource filename:"
+                    echo "$file"
+                    exit 1
+                    ;;
+                esac
+              done
+
+          echo "Resource filenames look valid."
+
+
+      # ============================================================
+      # CLEAN
+      # ============================================================
+
+      - name: Clean Gradle build
+        run: |
+          echo "========================================"
+          echo "CLEANING"
+          echo "========================================"
+
+          gradle clean --stacktrace
+
+
+      # ============================================================
+      # BUILD RELEASE APK
+      # ============================================================
 
       - name: Build release APK
         run: |
@@ -132,26 +347,48 @@ jobs:
           echo "========================================"
 
           gradle \
-            clean \
             assembleRelease \
-            --stacktrace
+            --stacktrace \
+            --info \
+            --warning-mode all
+
+
+      # ============================================================
+      # VERIFY APK
+      # ============================================================
 
       - name: Verify APK
         run: |
+          echo "========================================"
+          echo "VERIFYING APK"
+          echo "========================================"
+
           test -f app/build/outputs/apk/release/app-release.apk
 
-          echo "========================================"
-          echo "APK CREATED"
-          echo "========================================"
+          echo ""
+          echo "APK CREATED SUCCESSFULLY"
+          echo ""
 
           ls -lh \
             app/build/outputs/apk/release/app-release.apk
+
+
+      # ============================================================
+      # RENAME APK
+      # ============================================================
 
       - name: Rename APK
         run: |
           cp \
             app/build/outputs/apk/release/app-release.apk \
             PiperTTS-RyanHigh.apk
+
+          ls -lh PiperTTS-RyanHigh.apk
+
+
+      # ============================================================
+      # UPLOAD APK
+      # ============================================================
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
