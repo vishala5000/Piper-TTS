@@ -93,22 +93,45 @@ jobs:
 
       - name: Download eSpeak NG data
         run: |
-          cd app/src/main/assets
+          mkdir -p app/src/main/assets/ryan
+
+          cd app/src/main/assets/ryan
+
+          rm -rf espeak-ng-data
+          rm -f espeak-ng-data.tar.bz2
 
           curl --fail --location --retry 5 \
             -o espeak-ng-data.tar.bz2 \
             "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/espeak-ng-data.tar.bz2"
 
+          echo "Extracting eSpeak NG data..."
+
           tar -xjf espeak-ng-data.tar.bz2
 
           rm -f espeak-ng-data.tar.bz2
 
-          if [ ! -d "espeak-ng-data" ]; then
-            echo "ERROR: espeak-ng-data directory was not created"
-            exit 1
+          echo "Extracted directories:"
+          find . -maxdepth 3 -type d | sort
+
+          if [ -d "espeak-ng-data" ]; then
+            echo "eSpeak NG data found correctly."
+          else
+            echo "eSpeak NG data directory not found."
+
+            FOUND=$(find . -type d -name "espeak-ng-data" | head -n 1)
+
+            if [ -n "$FOUND" ]; then
+              echo "Found at: $FOUND"
+
+              mv "$FOUND" ./espeak-ng-data
+            else
+              echo "ERROR: espeak-ng-data could not be found."
+              exit 1
+            fi
           fi
 
-          echo "eSpeak NG data installed."
+          echo "Final eSpeak NG directory:"
+          ls -lah espeak-ng-data
 
       - name: Download sherpa-onnx Android package
         run: |
@@ -254,7 +277,7 @@ jobs:
           echo "========================================"
 
           find app/src/main \
-            -maxdepth 5 \
+            -maxdepth 6 \
             -type f \
             | sort
 
