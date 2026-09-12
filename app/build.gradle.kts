@@ -5,10 +5,12 @@ plugins {
 
 android {
     namespace = "com.vishal.pipertts"
+
     compileSdk = 35
 
     defaultConfig {
         applicationId = "com.vishal.pipertts"
+
         minSdk = 23
         targetSdk = 35
 
@@ -26,23 +28,11 @@ android {
             isShrinkResources = false
 
             proguardFiles(
-                getDefaultProguardFile("proguard-android-optimize.txt"),
+                getDefaultProguardFile(
+                    "proguard-android-optimize.txt"
+                ),
                 "proguard-rules.pro"
             )
-        }
-
-        debug {
-            isMinifyEnabled = false
-        }
-    }
-
-    packaging {
-        jniLibs {
-            useLegacyPackaging = true
-        }
-
-        resources {
-            excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
     }
 
@@ -54,9 +44,15 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
-}
 
-dependencies {
-    implementation("androidx.appcompat:appcompat:1.7.1")
-    implementation(files("libs/sherpa-onnx-1.13.8.aar"))
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+
+        resources {
+            excludes +=
+                "/META-INF/{AL2.0,LGPL2.1}"
+        }
+    }
 }
