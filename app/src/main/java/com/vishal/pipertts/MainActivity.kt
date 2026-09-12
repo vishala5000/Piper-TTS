@@ -185,7 +185,7 @@ class MainActivity : AppCompatActivity() {
                 val vitsConfig =
                     OfflineTtsVitsModelConfig(
                         model =
-                            "ryan/en_US-ryan-high.onnx",
+                            "ryan/en_US-ryan-medium.onnx",
 
                         tokens =
                             "ryan/tokens.txt",
