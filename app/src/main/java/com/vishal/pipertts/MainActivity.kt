@@ -33,7 +33,7 @@ class MainActivity : AppCompatActivity() {
         private const val MODEL_NAME = "en_US-ryan-high.onnx"
         private const val ASSET_ROOT = "ryan"
 
-        private const val PREPARE_VERSION = "ryan-high-v3"
+        private const val PREPARE_VERSION = "ryan-high-v4"
 
         private const val MAX_TEXT_LENGTH = 20_000
 
@@ -41,15 +41,17 @@ class MainActivity : AppCompatActivity() {
         private const val MAX_SPEED = 1.50f
 
         /*
-         * Smaller requests are more stable for long scripts
-         * while still keeping generation reasonably fast.
+         * Text is generated in smaller sections.
+         * This prevents very large requests from consuming
+         * excessive memory and improves reliability.
          */
         private const val MAX_CHUNK_CHARACTERS = 700
 
         /*
-         * Lower silence scaling keeps narration tighter.
+         * 0.2 is the sherpa-onnx default sentence silence scale.
+         * Keeping the default gives natural sentence spacing.
          */
-        private const val SILENCE_SCALE = 0.80f
+        private const val SILENCE_SCALE = 0.20f
     }
 
     private lateinit var textInput: EditText
@@ -72,6 +74,9 @@ class MainActivity : AppCompatActivity() {
 
     @Volatile
     private var isGenerating = false
+
+    @Volatile
+    private var generationCancelled = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -178,7 +183,18 @@ class MainActivity : AppCompatActivity() {
         }
 
         stopButton.setOnClickListener {
-            stopPlayback()
+
+            if (isGenerating) {
+
+                generationCancelled = true
+
+                statusText.text =
+                    "Stopping generation..."
+
+            } else {
+
+                stopPlayback()
+            }
         }
 
         saveButton.setOnClickListener {
@@ -216,6 +232,19 @@ class MainActivity : AppCompatActivity() {
 
     private fun getSelectedSpeed(): Float {
 
+        /*
+         * SeekBar is expected to use:
+         * min = 0
+         * max = 200
+         *
+         * 0    = 0.80x
+         * 100  = 1.15x
+         * 200  = 1.50x
+         *
+         * The XML should start at progress 57
+         * for approximately 1.00x.
+         */
+
         val progress =
             speedSeekBar.progress.coerceIn(0, 200)
 
@@ -248,7 +277,8 @@ class MainActivity : AppCompatActivity() {
                     generatedWav?.isFile == true
 
         stopButton.isEnabled =
-            mediaPlayer?.isPlaying == true
+            isGenerating ||
+                    mediaPlayer != null
     }
 
     private fun prepareTtsInBackground() {
@@ -300,14 +330,22 @@ class MainActivity : AppCompatActivity() {
                     Runtime.getRuntime()
                         .availableProcessors()
 
+                /*
+                 * Keep the number of inference threads reasonable.
+                 * Too many threads can actually make low-end phones
+                 * slower because of thermal throttling.
+                 */
                 val threadCount =
-                    cpuCount.coerceIn(2, 6)
+                    cpuCount.coerceIn(2, 4)
 
                 val vitsConfig =
                     OfflineTtsVitsModelConfig(
-                        model = modelFile.absolutePath,
-                        tokens = tokensFile.absolutePath,
-                        dataDir = dataDir.absolutePath
+                        model =
+                            modelFile.absolutePath,
+                        tokens =
+                            tokensFile.absolutePath,
+                        dataDir =
+                            dataDir.absolutePath
                     )
 
                 val modelConfig =
@@ -390,7 +428,13 @@ class MainActivity : AppCompatActivity() {
                 baseDirectory.deleteRecursively()
             }
 
-            baseDirectory.mkdirs()
+            if (!baseDirectory.mkdirs() &&
+                !baseDirectory.isDirectory
+            ) {
+                throw IOException(
+                    "Could not create Piper directory."
+                )
+            }
 
             copyAssetFile(
                 "$ASSET_ROOT/$MODEL_NAME",
@@ -559,6 +603,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         isGenerating = true
+        generationCancelled = false
 
         stopPlayback()
 
@@ -569,7 +614,8 @@ class MainActivity : AppCompatActivity() {
             generateButton.isEnabled = false
             playButton.isEnabled = false
             saveButton.isEnabled = false
-            stopButton.isEnabled = false
+
+            stopButton.isEnabled = true
 
             progressBar.progress = 0
             progressBar.visibility =
@@ -608,12 +654,22 @@ class MainActivity : AppCompatActivity() {
                     temporaryDirectory.deleteRecursively()
                 }
 
-                temporaryDirectory.mkdirs()
+                if (!temporaryDirectory.mkdirs() &&
+                    !temporaryDirectory.isDirectory
+                ) {
+                    throw IOException(
+                        "Could not create temporary directory."
+                    )
+                }
 
                 val chunkFiles =
                     ArrayList<File>()
 
                 for (index in chunks.indices) {
+
+                    if (generationCancelled) {
+                        throw GenerationCancelledException()
+                    }
 
                     val chunk =
                         chunks[index]
@@ -629,9 +685,13 @@ class MainActivity : AppCompatActivity() {
                             )
 
                         progressBar.progress =
-                            ((index.toFloat() /
-                                    chunks.size.toFloat()) * 100f)
-                                .toInt()
+                            (
+                                (
+                                    index.toFloat() /
+                                            chunks.size.toFloat()
+                                    ) *
+                                        100f
+                                ).toInt()
                     }
 
                     val audio =
@@ -646,6 +706,10 @@ class MainActivity : AppCompatActivity() {
                                 )
                         )
 
+                    if (generationCancelled) {
+                        throw GenerationCancelledException()
+                    }
+
                     val chunkFile =
                         File(
                             temporaryDirectory,
@@ -656,20 +720,23 @@ class MainActivity : AppCompatActivity() {
                             )
                         )
 
+                    /*
+                     * GeneratedAudio.save() creates the WAV.
+                     *
+                     * Do NOT call audio.release().
+                     * GeneratedAudio is not a MediaPlayer and
+                     * the Kotlin API does not expose release().
+                     */
                     if (!audio.save(
                             filename =
                                 chunkFile.absolutePath
                         )
                     ) {
 
-                        audio.release()
-
                         throw IOException(
                             "Failed to generate chunk ${index + 1}."
                         )
                     }
-
-                    audio.release()
 
                     if (
                         !chunkFile.isFile ||
@@ -686,10 +753,18 @@ class MainActivity : AppCompatActivity() {
                     runOnUiThread {
 
                         progressBar.progress =
-                            (((index + 1).toFloat() /
-                                    chunks.size.toFloat()) * 100f)
-                                .toInt()
+                            (
+                                (
+                                    (index + 1).toFloat() /
+                                            chunks.size.toFloat()
+                                    ) *
+                                        100f
+                                ).toInt()
                     }
+                }
+
+                if (generationCancelled) {
+                    throw GenerationCancelledException()
                 }
 
                 runOnUiThread {
@@ -747,9 +822,33 @@ class MainActivity : AppCompatActivity() {
                     stopButton.isEnabled = false
                 }
 
+            } catch (e: GenerationCancelledException) {
+
+                temporaryDirectory.deleteRecursively()
+
+                generatedWav = null
+
+                runOnUiThread {
+
+                    progressBar.visibility =
+                        ProgressBar.GONE
+
+                    progressBar.progress = 0
+
+                    statusText.text =
+                        "Generation cancelled."
+
+                    generateButton.isEnabled = true
+                    playButton.isEnabled = false
+                    saveButton.isEnabled = false
+                    stopButton.isEnabled = false
+                }
+
             } catch (e: Throwable) {
 
                 temporaryDirectory.deleteRecursively()
+
+                generatedWav = null
 
                 val message =
                     e.message
@@ -759,6 +858,8 @@ class MainActivity : AppCompatActivity() {
 
                     progressBar.visibility =
                         ProgressBar.GONE
+
+                    progressBar.progress = 0
 
                     statusText.text =
                         "Generation failed:\n$message"
@@ -772,9 +873,13 @@ class MainActivity : AppCompatActivity() {
             } finally {
 
                 isGenerating = false
+                generationCancelled = false
             }
         }
     }
+
+    private class GenerationCancelledException :
+        Exception()
 
     private fun splitTextIntoChunks(
         text: String,
@@ -783,8 +888,14 @@ class MainActivity : AppCompatActivity() {
 
         val cleaned =
             text
-                .replace("\r\n", "\n")
-                .replace("\r", "\n")
+                .replace(
+                    "\r\n",
+                    "\n"
+                )
+                .replace(
+                    "\r",
+                    "\n"
+                )
                 .replace(
                     Regex("[ \t]+"),
                     " "
@@ -827,7 +938,82 @@ class MainActivity : AppCompatActivity() {
                 StringBuilder()
         }
 
-        fun addPiece(piece: String) {
+        fun addWords(
+            value: String
+        ) {
+
+            val words =
+                value
+                    .trim()
+                    .split(
+                        Regex("\\s+")
+                    )
+
+            for (word in words) {
+
+                if (word.isEmpty()) {
+                    continue
+                }
+
+                if (word.length > maxCharacters) {
+
+                    if (current.isNotEmpty()) {
+                        flush()
+                    }
+
+                    var start = 0
+
+                    while (
+                        start < word.length
+                    ) {
+
+                        val end =
+                            minOf(
+                                start +
+                                        maxCharacters,
+                                word.length
+                            )
+
+                        chunks.add(
+                            word.substring(
+                                start,
+                                end
+                            )
+                        )
+
+                        start = end
+                    }
+
+                    continue
+                }
+
+                if (current.isEmpty()) {
+
+                    current.append(word)
+
+                } else if (
+                    current.length +
+                    1 +
+                    word.length <=
+                    maxCharacters
+                ) {
+
+                    current
+                        .append(" ")
+                        .append(word)
+
+                } else {
+
+                    flush()
+
+                    current.append(word)
+                }
+            }
+        }
+
+        fun addPiece(
+            piece: String
+        ) {
 
             val value =
                 piece.trim()
@@ -863,6 +1049,10 @@ class MainActivity : AppCompatActivity() {
                 return
             }
 
+            /*
+             * First try to split long sections around
+             * commas, semicolons, colons and dashes.
+             */
             val clauses =
                 value.split(
                     Regex(
@@ -878,77 +1068,21 @@ class MainActivity : AppCompatActivity() {
 
                 } else {
 
-                    val words =
-                        clause.split(
-                            Regex("\\s+")
-                        )
-
-                    for (word in words) {
-
-                        if (
-                            word.length >
-                            maxCharacters
-                        ) {
-
-                            if (current.isNotEmpty()) {
-                                flush()
-                            }
-
-                            var start = 0
-
-                            while (
-                                start <
-                                word.length
-                            ) {
-
-                                val end =
-                                    minOf(
-                                        start +
-                                                maxCharacters,
-                                        word.length
-                                    )
-
-                                chunks.add(
-                                    word.substring(
-                                        start,
-                                        end
-                                    )
-                                )
-
-                                start = end
-                            }
-
-                        } else {
-
-                            if (current.isEmpty()) {
-
-                                current.append(word)
-
-                            } else if (
-                                current.length +
-                                1 +
-                                word.length <=
-                                maxCharacters
-                            ) {
-
-                                current
-                                    .append(" ")
-                                    .append(word)
-
-                            } else {
-
-                                flush()
-
-                                current.append(word)
-                            }
-                        }
-                    }
+                    addWords(clause)
                 }
             }
         }
 
         for (paragraph in paragraphs) {
 
+            if (paragraph.trim().isEmpty()) {
+                continue
+            }
+
+            /*
+             * Split at normal sentence-ending punctuation.
+             * This keeps sentences together whenever possible.
+             */
             val sentences =
                 paragraph
                     .trim()
@@ -972,8 +1106,12 @@ class MainActivity : AppCompatActivity() {
         }
 
         return chunks
-            .map { it.trim() }
-            .filter { it.isNotEmpty() }
+            .map {
+                it.trim()
+            }
+            .filter {
+                it.isNotEmpty()
+            }
     }
 
     private fun concatenateWavFiles(
@@ -992,16 +1130,42 @@ class MainActivity : AppCompatActivity() {
         }
 
         val first =
-            WavInfo.read(files.first())
+            WavInfo.read(
+                files.first()
+            )
+
+        if (first.audioFormat != 1) {
+            throw IOException(
+                "Only PCM WAV files are supported."
+            )
+        }
 
         FileOutputStream(output).use { out ->
 
-            writeAscii(out, "RIFF")
-            writeIntLE(out, 0)
-            writeAscii(out, "WAVE")
+            writeAscii(
+                out,
+                "RIFF"
+            )
 
-            writeAscii(out, "fmt ")
-            writeIntLE(out, 16)
+            writeIntLE(
+                out,
+                0
+            )
+
+            writeAscii(
+                out,
+                "WAVE"
+            )
+
+            writeAscii(
+                out,
+                "fmt "
+            )
+
+            writeIntLE(
+                out,
+                16
+            )
 
             writeShortLE(
                 out,
@@ -1033,13 +1197,22 @@ class MainActivity : AppCompatActivity() {
                 first.bitsPerSample
             )
 
-            writeAscii(out, "data")
-            writeIntLE(out, 0)
+            writeAscii(
+                out,
+                "data"
+            )
+
+            writeIntLE(
+                out,
+                0
+            )
 
             var totalDataSize = 0L
 
             val buffer =
-                ByteArray(64 * 1024)
+                ByteArray(
+                    64 * 1024
+                )
 
             for (file in files) {
 
@@ -1074,7 +1247,9 @@ class MainActivity : AppCompatActivity() {
                     var remaining =
                         info.dataSize
 
-                    while (remaining > 0) {
+                    while (
+                        remaining > 0
+                    ) {
 
                         val wanted =
                             minOf(
@@ -1099,8 +1274,11 @@ class MainActivity : AppCompatActivity() {
                             read
                         )
 
-                        totalDataSize += read
-                        remaining -= read
+                        totalDataSize +=
+                            read.toLong()
+
+                        remaining -=
+                            read.toLong()
                     }
                 }
             }
@@ -1112,10 +1290,7 @@ class MainActivity : AppCompatActivity() {
                 "rw"
             ).use { raf ->
 
-                raf.seek(4)
-
-                writeIntLE(
-                    raf,
+                val riffSize =
                     (
                         36L +
                                 totalDataSize
@@ -1124,17 +1299,26 @@ class MainActivity : AppCompatActivity() {
                             0xFFFFFFFFL
                         )
                         .toInt()
+
+                val dataSize =
+                    totalDataSize
+                        .coerceAtMost(
+                            0xFFFFFFFFL
+                        )
+                        .toInt()
+
+                raf.seek(4)
+
+                writeIntLE(
+                    raf,
+                    riffSize
                 )
 
                 raf.seek(40)
 
                 writeIntLE(
                     raf,
-                    totalDataSize
-                        .coerceAtMost(
-                            0xFFFFFFFFL
-                        )
-                        .toInt()
+                    dataSize
                 )
             }
         }
@@ -1239,6 +1423,7 @@ class MainActivity : AppCompatActivity() {
                         )
 
                     if (riff != "RIFF") {
+
                         throw IOException(
                             "Invalid WAV: ${file.name}"
                         )
@@ -1253,6 +1438,7 @@ class MainActivity : AppCompatActivity() {
                         )
 
                     if (wave != "WAVE") {
+
                         throw IOException(
                             "Invalid WAVE: ${file.name}"
                         )
@@ -1291,23 +1477,42 @@ class MainActivity : AppCompatActivity() {
 
                             "fmt " -> {
 
+                                if (chunkSize < 16) {
+
+                                    throw IOException(
+                                        "Invalid fmt chunk."
+                                    )
+                                }
+
                                 audioFormat =
-                                    readShortLE(raf)
+                                    readShortLE(
+                                        raf
+                                    )
 
                                 channels =
-                                    readShortLE(raf)
+                                    readShortLE(
+                                        raf
+                                    )
 
                                 sampleRate =
-                                    readIntLE(raf)
+                                    readIntLE(
+                                        raf
+                                    )
 
                                 byteRate =
-                                    readIntLE(raf)
+                                    readIntLE(
+                                        raf
+                                    )
 
                                 blockAlign =
-                                    readShortLE(raf)
+                                    readShortLE(
+                                        raf
+                                    )
 
                                 bitsPerSample =
-                                    readShortLE(raf)
+                                    readShortLE(
+                                        raf
+                                    )
                             }
 
                             "data" -> {
@@ -1336,6 +1541,8 @@ class MainActivity : AppCompatActivity() {
                         audioFormat < 0 ||
                         channels < 0 ||
                         sampleRate < 0 ||
+                        byteRate < 0 ||
+                        blockAlign < 0 ||
                         bitsPerSample < 0 ||
                         dataOffset < 0 ||
                         dataSize < 0
@@ -1347,14 +1554,22 @@ class MainActivity : AppCompatActivity() {
                     }
 
                     return WavInfo(
-                        audioFormat,
-                        channels,
-                        sampleRate,
-                        byteRate,
-                        blockAlign,
-                        bitsPerSample,
-                        dataOffset,
-                        dataSize
+                        audioFormat =
+                            audioFormat,
+                        channels =
+                            channels,
+                        sampleRate =
+                            sampleRate,
+                        byteRate =
+                            byteRate,
+                        blockAlign =
+                            blockAlign,
+                        bitsPerSample =
+                            bitsPerSample,
+                        dataOffset =
+                            dataOffset,
+                        dataSize =
+                            dataSize
                     )
                 }
             }
@@ -1379,10 +1594,29 @@ class MainActivity : AppCompatActivity() {
                 raf: RandomAccessFile
             ): Int {
 
-                val b0 = raf.read()
-                val b1 = raf.read()
-                val b2 = raf.read()
-                val b3 = raf.read()
+                val b0 =
+                    raf.read()
+
+                val b1 =
+                    raf.read()
+
+                val b2 =
+                    raf.read()
+
+                val b3 =
+                    raf.read()
+
+                if (
+                    b0 < 0 ||
+                    b1 < 0 ||
+                    b2 < 0 ||
+                    b3 < 0
+                ) {
+
+                    throw IOException(
+                        "Unexpected end of WAV."
+                    )
+                }
 
                 return b0 or
                         (b1 shl 8) or
@@ -1394,8 +1628,21 @@ class MainActivity : AppCompatActivity() {
                 raf: RandomAccessFile
             ): Int {
 
-                val b0 = raf.read()
-                val b1 = raf.read()
+                val b0 =
+                    raf.read()
+
+                val b1 =
+                    raf.read()
+
+                if (
+                    b0 < 0 ||
+                    b1 < 0
+                ) {
+
+                    throw IOException(
+                        "Unexpected end of WAV."
+                    )
+                }
 
                 return b0 or
                         (b1 shl 8)
@@ -1430,9 +1677,9 @@ class MainActivity : AppCompatActivity() {
                         wav.absolutePath
                     )
 
-                    setOnPreparedListener {
+                    setOnPreparedListener { mp ->
 
-                        start()
+                        mp.start()
 
                         runOnUiThread {
 
@@ -1444,7 +1691,7 @@ class MainActivity : AppCompatActivity() {
                         }
                     }
 
-                    setOnCompletionListener {
+                    setOnCompletionListener { mp ->
 
                         runOnUiThread {
 
@@ -1455,14 +1702,23 @@ class MainActivity : AppCompatActivity() {
                                 false
                         }
 
-                        release()
+                        /*
+                         * IMPORTANT:
+                         * release the MediaPlayer itself.
+                         */
+                        try {
+                            mp.release()
+                        } catch (_: Throwable) {
+                        }
 
-                        mediaPlayer = null
+                        if (
+                            mediaPlayer === mp
+                        ) {
+                            mediaPlayer = null
+                        }
                     }
 
-                    setOnErrorListener {
-
-                            _, _, _ ->
+                    setOnErrorListener { mp, _, _ ->
 
                         runOnUiThread {
 
@@ -1473,9 +1729,20 @@ class MainActivity : AppCompatActivity() {
                                 false
                         }
 
-                        release()
+                        /*
+                         * IMPORTANT:
+                         * release the MediaPlayer itself.
+                         */
+                        try {
+                            mp.release()
+                        } catch (_: Throwable) {
+                        }
 
-                        mediaPlayer = null
+                        if (
+                            mediaPlayer === mp
+                        ) {
+                            mediaPlayer = null
+                        }
 
                         true
                     }
@@ -1518,15 +1785,20 @@ class MainActivity : AppCompatActivity() {
             } catch (_: Throwable) {
             }
 
-            mediaPlayer = null
+            if (
+                mediaPlayer === player
+            ) {
+                mediaPlayer = null
+            }
         }
 
         if (!isFinishing) {
 
             runOnUiThread {
 
-                stopButton.isEnabled =
-                    false
+                if (!isGenerating) {
+                    stopButton.isEnabled = false
+                }
             }
         }
     }
@@ -1594,6 +1866,7 @@ class MainActivity : AppCompatActivity() {
                         .use { output ->
 
                             if (output == null) {
+
                                 throw IOException(
                                     "Could not open output stream."
                                 )
@@ -1671,6 +1944,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
 
+        generationCancelled = true
         isGenerating = false
 
         stopPlayback()
