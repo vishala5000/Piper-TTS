@@ -57,5 +57,6 @@ android {
 }
 
 dependencies {
+    implementation("androidx.appcompat:appcompat:1.7.1")
     implementation(files("libs/sherpa-onnx-1.13.8.aar"))
 }
