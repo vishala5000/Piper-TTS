@@ -93,8 +93,6 @@ jobs:
 
       - name: Download eSpeak NG data
         run: |
-          mkdir -p app/src/main/assets/ryan
-
           cd app/src/main/assets/ryan
 
           rm -rf espeak-ng-data
@@ -116,13 +114,12 @@ jobs:
           if [ -d "espeak-ng-data" ]; then
             echo "eSpeak NG data found correctly."
           else
-            echo "eSpeak NG data directory not found."
+            echo "eSpeak NG directory not found."
 
             FOUND=$(find . -type d -name "espeak-ng-data" | head -n 1)
 
             if [ -n "$FOUND" ]; then
               echo "Found at: $FOUND"
-
               mv "$FOUND" ./espeak-ng-data
             else
               echo "ERROR: espeak-ng-data could not be found."
@@ -277,7 +274,7 @@ jobs:
           echo "========================================"
 
           find app/src/main \
-            -maxdepth 6 \
+            -maxdepth 8 \
             -type f \
             | sort
 
@@ -285,30 +282,70 @@ jobs:
 
       - name: Build APK
         run: |
+          echo "========================================"
+          echo "STARTING GRADLE BUILD"
+          echo "========================================"
+
           gradle clean assembleRelease --stacktrace
 
-      - name: Verify APK
-        run: |
-          APK="app/build/outputs/apk/release/app-release.apk"
+          echo ""
+          echo "========================================"
+          echo "GRADLE BUILD FINISHED"
+          echo "========================================"
 
-          if [ ! -f "$APK" ]; then
-            echo "ERROR: APK was not created"
+      - name: Find and verify APK
+        run: |
+          echo "========================================"
+          echo "SEARCHING FOR APK"
+          echo "========================================"
+
+          echo ""
+          echo "All APK files:"
+          find . -type f -name "*.apk" -print
+
+          echo ""
+          echo "Release build directory:"
+          find app/build/outputs \
+            -maxdepth 8 \
+            -type f \
+            -print 2>/dev/null || true
+
+          echo ""
+          echo "========================================"
+
+          APK=$(find app/build/outputs \
+            -type f \
+            -name "*.apk" \
+            | head -n 1)
+
+          if [ -z "$APK" ]; then
+            echo "ERROR: NO APK WAS CREATED"
+            echo ""
+            echo "Gradle did not produce an APK."
+            echo ""
+            echo "Checking build directory:"
+            find app/build \
+              -maxdepth 10 \
+              -type f \
+              -print 2>/dev/null || true
+
             exit 1
           fi
 
-          echo "========================================"
-          echo "APK CREATED SUCCESSFULLY"
-          echo "========================================"
+          echo "APK FOUND:"
+          echo "$APK"
 
+          echo ""
+          echo "APK SIZE:"
           ls -lh "$APK"
 
-      - name: Rename APK
-        run: |
-          cp \
-            app/build/outputs/apk/release/app-release.apk \
-            PiperTTS-RyanHigh.apk
+          cp "$APK" PiperTTS-RyanHigh.apk
 
-          echo "Final APK:"
+          echo ""
+          echo "========================================"
+          echo "FINAL APK"
+          echo "========================================"
+
           ls -lh PiperTTS-RyanHigh.apk
 
       - name: Upload APK
@@ -316,3 +353,4 @@ jobs:
         with:
           name: PiperTTS-RyanHigh
           path: PiperTTS-RyanHigh.apk
+          if-no-files-found: error
