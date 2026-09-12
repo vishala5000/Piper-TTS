@@ -56,15 +56,8 @@ jobs:
 
       - name: Verify Piper model
         run: |
-          if [ ! -f "build/piper/en_US-ryan-high.onnx" ]; then
-            echo "ERROR: Piper ONNX model not found"
-            exit 1
-          fi
-
-          if [ ! -f "build/piper/en_US-ryan-high.onnx.json" ]; then
-            echo "ERROR: Piper JSON config not found"
-            exit 1
-          fi
+          test -f build/piper/en_US-ryan-high.onnx
+          test -f build/piper/en_US-ryan-high.onnx.json
 
           echo "Piper model files found."
 
@@ -79,15 +72,8 @@ jobs:
 
       - name: Verify prepared Piper model
         run: |
-          if [ ! -f "app/src/main/assets/ryan/en_US-ryan-high.onnx" ]; then
-            echo "ERROR: Prepared ONNX model missing"
-            exit 1
-          fi
-
-          if [ ! -f "app/src/main/assets/ryan/tokens.txt" ]; then
-            echo "ERROR: tokens.txt missing"
-            exit 1
-          fi
+          test -f app/src/main/assets/ryan/en_US-ryan-high.onnx
+          test -f app/src/main/assets/ryan/tokens.txt
 
           echo "Prepared Piper model verified."
 
@@ -102,24 +88,14 @@ jobs:
             -o espeak-ng-data.tar.bz2 \
             "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/espeak-ng-data.tar.bz2"
 
-          echo "Extracting eSpeak NG data..."
-
           tar -xjf espeak-ng-data.tar.bz2
 
           rm -f espeak-ng-data.tar.bz2
 
-          echo "Extracted directories:"
-          find . -maxdepth 3 -type d | sort
-
-          if [ -d "espeak-ng-data" ]; then
-            echo "eSpeak NG data found correctly."
-          else
-            echo "eSpeak NG directory not found."
-
+          if [ ! -d "espeak-ng-data" ]; then
             FOUND=$(find . -type d -name "espeak-ng-data" | head -n 1)
 
             if [ -n "$FOUND" ]; then
-              echo "Found at: $FOUND"
               mv "$FOUND" ./espeak-ng-data
             else
               echo "ERROR: espeak-ng-data could not be found."
@@ -127,7 +103,7 @@ jobs:
             fi
           fi
 
-          echo "Final eSpeak NG directory:"
+          echo "eSpeak NG data verified:"
           ls -lah espeak-ng-data
 
       - name: Download sherpa-onnx Android package
@@ -146,8 +122,6 @@ jobs:
 
       - name: Find sherpa native libraries
         run: |
-          echo "Searching for native libraries..."
-
           find build/sherpa-onnx \
             -type f \
             -name "*.so" \
@@ -162,8 +136,6 @@ jobs:
 
           if [ -z "$ARM64_DIR" ]; then
             echo "ERROR: arm64-v8a directory not found"
-            echo ""
-            echo "Available directories:"
             find build/sherpa-onnx -type d | head -100
             exit 1
           fi
@@ -177,27 +149,20 @@ jobs:
             -name "*.so" \
             -exec cp {} app/src/main/jniLibs/arm64-v8a/ \;
 
-          echo ""
           echo "Copied native libraries:"
           ls -lh app/src/main/jniLibs/arm64-v8a
 
       - name: Download official sherpa Kotlin API
         run: |
-          mkdir -p \
-            app/src/main/java/com/k2fsa/sherpa/onnx
+          mkdir -p app/src/main/java/com/k2fsa/sherpa/onnx
 
           curl --fail --location --retry 5 \
             -o app/src/main/java/com/k2fsa/sherpa/onnx/Tts.kt \
             "https://raw.githubusercontent.com/k2-fsa/sherpa-onnx/v1.13.8/sherpa-onnx/kotlin-api/Tts.kt"
 
-          if [ ! -s "app/src/main/java/com/k2fsa/sherpa/onnx/Tts.kt" ]; then
-            echo "ERROR: Tts.kt was not downloaded"
-            exit 1
-          fi
+          test -s app/src/main/java/com/k2fsa/sherpa/onnx/Tts.kt
 
-          echo "Tts.kt downloaded successfully:"
-          ls -lh \
-            app/src/main/java/com/k2fsa/sherpa/onnx/Tts.kt
+          echo "Tts.kt downloaded successfully."
 
       - name: Verify project files
         run: |
@@ -228,10 +193,8 @@ jobs:
           check_file "settings.gradle.kts"
           check_file "build.gradle.kts"
           check_file "gradle.properties"
-
           check_file "app/build.gradle.kts"
           check_file "app/proguard-rules.pro"
-
           check_file "app/src/main/AndroidManifest.xml"
 
           check_file \
@@ -255,63 +218,47 @@ jobs:
           check_file \
             "app/src/main/jniLibs/arm64-v8a/libonnxruntime.so"
 
-          echo ""
-          echo "========================================"
-
           if [ "$FAILED" -ne 0 ]; then
             echo "ERROR: REQUIRED FILES ARE MISSING"
-            echo "========================================"
             exit 1
           fi
 
           echo "ALL REQUIRED FILES FOUND"
-          echo "========================================"
 
       - name: Show project structure
         run: |
-          echo "========================================"
-          echo "PROJECT STRUCTURE"
-          echo "========================================"
-
           find app/src/main \
             -maxdepth 8 \
             -type f \
             | sort
 
-          echo "========================================"
-
       - name: Build APK
         run: |
           echo "========================================"
-          echo "STARTING GRADLE BUILD"
+          echo "BUILDING RELEASE APK"
           echo "========================================"
 
           gradle clean assembleRelease --stacktrace
 
-          echo ""
           echo "========================================"
           echo "GRADLE BUILD FINISHED"
           echo "========================================"
 
-      - name: Find and verify APK
+      - name: Verify and locate APK
         run: |
           echo "========================================"
           echo "SEARCHING FOR APK"
           echo "========================================"
 
-          echo ""
           echo "All APK files:"
           find . -type f -name "*.apk" -print
 
           echo ""
-          echo "Release build directory:"
+          echo "Build outputs:"
           find app/build/outputs \
-            -maxdepth 8 \
+            -maxdepth 10 \
             -type f \
             -print 2>/dev/null || true
-
-          echo ""
-          echo "========================================"
 
           APK=$(find app/build/outputs \
             -type f \
@@ -319,19 +266,12 @@ jobs:
             | head -n 1)
 
           if [ -z "$APK" ]; then
+            echo ""
             echo "ERROR: NO APK WAS CREATED"
-            echo ""
-            echo "Gradle did not produce an APK."
-            echo ""
-            echo "Checking build directory:"
-            find app/build \
-              -maxdepth 10 \
-              -type f \
-              -print 2>/dev/null || true
-
             exit 1
           fi
 
+          echo ""
           echo "APK FOUND:"
           echo "$APK"
 
