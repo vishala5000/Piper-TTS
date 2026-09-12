@@ -17,12 +17,13 @@ import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import com.k2fsa.sherpa.onnx.GenerationConfig
 import com.k2fsa.sherpa.onnx.OfflineTts
 import com.k2fsa.sherpa.onnx.OfflineTtsConfig
 import com.k2fsa.sherpa.onnx.OfflineTtsModelConfig
 import com.k2fsa.sherpa.onnx.OfflineTtsVitsModelConfig
-import com.k2fsa.sherpa.onnx.GenerationConfig
 import java.io.IOException
+import java.io.OutputStream
 import java.util.concurrent.Executors
 
 class MainActivity : AppCompatActivity() {
@@ -58,6 +59,7 @@ class MainActivity : AppCompatActivity() {
         initializeViews()
         initializeTextCounter()
         initializeSpeed()
+
         initializeTts()
 
         generateButton.setOnClickListener {
@@ -142,7 +144,6 @@ class MainActivity : AppCompatActivity() {
                     progress: Int,
                     fromUser: Boolean
                 ) {
-
                     val speed =
                         0.50f + progress / 100f
 
@@ -169,36 +170,78 @@ class MainActivity : AppCompatActivity() {
     private fun getSpeed(): Float {
 
         val progress =
-            findViewById<SeekBar>(R.id.speedSeekBar).progress
+            findViewById<SeekBar>(
+                R.id.speedSeekBar
+            ).progress
 
         return 0.50f + progress / 100f
     }
 
     private fun initializeTts() {
 
-        statusText.text = "Loading Ryan High model..."
+        statusText.text =
+            "Loading Piper TTS model..."
+
+        generateButton.isEnabled = false
+        playButton.isEnabled = false
+        saveButton.isEnabled = false
 
         executor.execute {
 
             try {
 
+                /*
+                 * Check the required assets before
+                 * creating the sherpa-onnx engine.
+                 */
+
+                val modelPath =
+                    "ryan/en_US-ryan-medium.onnx"
+
+                val tokensPath =
+                    "ryan/tokens.txt"
+
+                val dataPath =
+                    "ryan/espeak-ng-data"
+
+                if (!assetExists(modelPath)) {
+                    throw IOException(
+                        "Missing model asset:\n$modelPath"
+                    )
+                }
+
+                if (!assetExists(tokensPath)) {
+                    throw IOException(
+                        "Missing tokens asset:\n$tokensPath"
+                    )
+                }
+
+                if (!assetExists(dataPath)) {
+                    throw IOException(
+                        "Missing eSpeak NG data:\n$dataPath"
+                    )
+                }
+
+                runOnUiThread {
+                    statusText.text =
+                        "Model files found\nLoading Ryan Medium..."
+                }
+
                 val vitsConfig =
                     OfflineTtsVitsModelConfig(
-                        model =
-                            "ryan/en_US-ryan-medium.onnx",
-
-                        tokens =
-                            "ryan/tokens.txt",
-
-                        dataDir =
-                            "ryan/espeak-ng-data"
+                        model = modelPath,
+                        tokens = tokensPath,
+                        dataDir = dataPath,
+                        noiseScale = 0.667f,
+                        noiseScaleW = 0.8f,
+                        lengthScale = 1.0f
                     )
 
                 val modelConfig =
                     OfflineTtsModelConfig(
                         vits = vitsConfig,
                         numThreads = 2,
-                        debug = false,
+                        debug = true,
                         provider = "cpu"
                     )
 
@@ -206,6 +249,11 @@ class MainActivity : AppCompatActivity() {
                     OfflineTtsConfig(
                         model = modelConfig
                     )
+
+                runOnUiThread {
+                    statusText.text =
+                        "Starting Piper TTS engine..."
+                }
 
                 val engine =
                     OfflineTts(
@@ -219,24 +267,120 @@ class MainActivity : AppCompatActivity() {
                     engine.sampleRate()
 
                 runOnUiThread {
+
                     statusText.text =
-                        "Ready • Ryan High • ${generatedSampleRate} Hz"
+                        "Ready • Ryan Medium • ${generatedSampleRate} Hz"
+
+                    generateButton.isEnabled = true
                 }
 
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
+
+                val errorText =
+                    buildErrorMessage(e)
 
                 runOnUiThread {
+
                     statusText.text =
-                        "Model loading failed"
+                        errorText
+
+                    generateButton.isEnabled = false
+                    playButton.isEnabled = false
+                    saveButton.isEnabled = false
 
                     Toast.makeText(
                         this,
-                        e.message ?: "Unknown error",
+                        "Piper TTS failed to load",
                         Toast.LENGTH_LONG
                     ).show()
                 }
             }
         }
+    }
+
+    private fun assetExists(path: String): Boolean {
+
+        return try {
+
+            assets.open(path).use {
+                true
+            }
+
+        } catch (_: Exception) {
+
+            try {
+
+                assets.list(path)?.isNotEmpty() == true
+
+            } catch (_: Exception) {
+
+                false
+            }
+        }
+    }
+
+    private fun buildErrorMessage(
+        throwable: Throwable
+    ): String {
+
+        val builder =
+            StringBuilder()
+
+        builder.append(
+            "PIPER TTS ERROR\n\n"
+        )
+
+        builder.append(
+            "Type:\n"
+        )
+
+        builder.append(
+            throwable.javaClass.name
+        )
+
+        builder.append(
+            "\n\nMessage:\n"
+        )
+
+        builder.append(
+            throwable.message
+                ?: "No error message"
+        )
+
+        var cause =
+            throwable.cause
+
+        var count = 0
+
+        while (
+            cause != null &&
+            count < 5
+        ) {
+
+            builder.append(
+                "\n\nCaused by:\n"
+            )
+
+            builder.append(
+                cause.javaClass.name
+            )
+
+            builder.append(
+                "\n"
+            )
+
+            builder.append(
+                cause.message
+                    ?: "No message"
+            )
+
+            cause =
+                cause.cause
+
+            count++
+        }
+
+        return builder.toString()
     }
 
     private fun generateSpeech() {
@@ -246,7 +390,9 @@ class MainActivity : AppCompatActivity() {
         }
 
         val text =
-            textInput.text.toString().trim()
+            textInput.text
+                .toString()
+                .trim()
 
         if (text.isEmpty()) {
 
@@ -259,13 +405,14 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        val engine = tts
+        val engine =
+            tts
 
         if (engine == null) {
 
             Toast.makeText(
                 this,
-                "TTS engine is still loading",
+                "TTS engine is not loaded",
                 Toast.LENGTH_SHORT
             ).show()
 
@@ -280,9 +427,11 @@ class MainActivity : AppCompatActivity() {
         playButton.isEnabled = false
         saveButton.isEnabled = false
 
-        statusText.text = "Generating..."
+        statusText.text =
+            "Generating..."
 
-        val speed = getSpeed()
+        val speed =
+            getSpeed()
 
         executor.execute {
 
@@ -312,24 +461,27 @@ class MainActivity : AppCompatActivity() {
                     statusText.text =
                         String.format(
                             "Ready • %.2f seconds",
-                            audio.samples.size.toFloat()
-                                / audio.sampleRate
+                            audio.samples.size.toFloat() /
+                                    audio.sampleRate
                         )
 
                     playButton.isEnabled = true
                     saveButton.isEnabled = true
                 }
 
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
+
+                val errorText =
+                    buildErrorMessage(e)
 
                 runOnUiThread {
 
                     statusText.text =
-                        "Generation failed"
+                        errorText
 
                     Toast.makeText(
                         this,
-                        e.message ?: "Generation error",
+                        "Speech generation failed",
                         Toast.LENGTH_LONG
                     ).show()
                 }
@@ -339,7 +491,8 @@ class MainActivity : AppCompatActivity() {
                 generating = false
 
                 runOnUiThread {
-                    generateButton.isEnabled = true
+                    generateButton.isEnabled =
+                        tts != null
                 }
             }
         }
@@ -348,81 +501,92 @@ class MainActivity : AppCompatActivity() {
     private fun playAudio() {
 
         val samples =
-            generatedSamples ?: return
+            generatedSamples
+                ?: return
 
         stopAudio()
 
-        val minBuffer =
-            AudioTrack.getMinBufferSize(
-                generatedSampleRate,
-                AudioFormat.CHANNEL_OUT_MONO,
-                AudioFormat.ENCODING_PCM_FLOAT
+        try {
+
+            val minBuffer =
+                AudioTrack.getMinBufferSize(
+                    generatedSampleRate,
+                    AudioFormat.CHANNEL_OUT_MONO,
+                    AudioFormat.ENCODING_PCM_FLOAT
+                )
+
+            audioTrack =
+                AudioTrack.Builder()
+                    .setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(
+                                AudioAttributes.USAGE_MEDIA
+                            )
+                            .setContentType(
+                                AudioAttributes.CONTENT_TYPE_SPEECH
+                            )
+                            .build()
+                    )
+                    .setAudioFormat(
+                        AudioFormat.Builder()
+                            .setSampleRate(
+                                generatedSampleRate
+                            )
+                            .setEncoding(
+                                AudioFormat.ENCODING_PCM_FLOAT
+                            )
+                            .setChannelMask(
+                                AudioFormat.CHANNEL_OUT_MONO
+                            )
+                            .build()
+                    )
+                    .setBufferSizeInBytes(
+                        maxOf(
+                            minBuffer,
+                            samples.size * 4
+                        )
+                    )
+                    .setTransferMode(
+                        AudioTrack.MODE_STATIC
+                    )
+                    .build()
+
+            audioTrack?.write(
+                samples,
+                0,
+                samples.size,
+                AudioTrack.WRITE_BLOCKING
             )
 
-        audioTrack =
-            AudioTrack.Builder()
-                .setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setUsage(
-                            AudioAttributes.USAGE_MEDIA
-                        )
-                        .setContentType(
-                            AudioAttributes.CONTENT_TYPE_SPEECH
-                        )
-                        .build()
-                )
-                .setAudioFormat(
-                    AudioFormat.Builder()
-                        .setSampleRate(
-                            generatedSampleRate
-                        )
-                        .setEncoding(
-                            AudioFormat.ENCODING_PCM_FLOAT
-                        )
-                        .setChannelMask(
-                            AudioFormat.CHANNEL_OUT_MONO
-                        )
-                        .build()
-                )
-                .setBufferSizeInBytes(
-                    maxOf(
-                        minBuffer,
-                        samples.size * 4
-                    )
-                )
-                .setTransferMode(
-                    AudioTrack.MODE_STATIC
-                )
-                .build()
+            audioTrack?.play()
 
-        audioTrack?.write(
-            samples,
-            0,
-            samples.size,
-            AudioTrack.WRITE_BLOCKING
-        )
+            statusText.text =
+                "Playing"
 
-        audioTrack?.play()
+        } catch (e: Throwable) {
 
-        statusText.text = "Playing"
+            statusText.text =
+                buildErrorMessage(e)
+        }
     }
 
     private fun stopAudio() {
 
         try {
             audioTrack?.stop()
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
         }
 
         try {
             audioTrack?.release()
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
         }
 
         audioTrack = null
 
         if (generatedSamples != null) {
-            statusText.text = "Ready"
+            statusText.text =
+                "Ready"
         }
     }
 
@@ -500,13 +664,16 @@ class MainActivity : AppCompatActivity() {
                     ).show()
                 }
 
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
 
                 runOnUiThread {
 
+                    statusText.text =
+                        buildErrorMessage(e)
+
                     Toast.makeText(
                         this,
-                        e.message ?: "Save failed",
+                        "Save failed",
                         Toast.LENGTH_LONG
                     ).show()
                 }
@@ -515,7 +682,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun writeWav(
-        output: java.io.OutputStream,
+        output: OutputStream,
         samples: FloatArray,
         sampleRate: Int
     ) {
@@ -529,10 +696,17 @@ class MainActivity : AppCompatActivity() {
         val header =
             ByteArray(44)
 
-        header[0] = 'R'.code.toByte()
-        header[1] = 'I'.code.toByte()
-        header[2] = 'F'.code.toByte()
-        header[3] = 'F'.code.toByte()
+        header[0] =
+            'R'.code.toByte()
+
+        header[1] =
+            'I'.code.toByte()
+
+        header[2] =
+            'F'.code.toByte()
+
+        header[3] =
+            'F'.code.toByte()
 
         writeIntLE(
             header,
@@ -540,28 +714,83 @@ class MainActivity : AppCompatActivity() {
             36 + pcmSize
         )
 
-        header[8] = 'W'.code.toByte()
-        header[9] = 'A'.code.toByte()
-        header[10] = 'V'.code.toByte()
-        header[11] = 'E'.code.toByte()
+        header[8] =
+            'W'.code.toByte()
 
-        header[12] = 'f'.code.toByte()
-        header[13] = 'm'.code.toByte()
-        header[14] = 't'.code.toByte()
-        header[15] = ' '.code.toByte()
+        header[9] =
+            'A'.code.toByte()
 
-        writeIntLE(header, 16, 16)
-        writeShortLE(header, 20, 1)
-        writeShortLE(header, 22, 1)
-        writeIntLE(header, 24, sampleRate)
-        writeIntLE(header, 28, byteRate)
-        writeShortLE(header, 32, 2)
-        writeShortLE(header, 34, 16)
+        header[10] =
+            'V'.code.toByte()
 
-        header[36] = 'd'.code.toByte()
-        header[37] = 'a'.code.toByte()
-        header[38] = 't'.code.toByte()
-        header[39] = 'a'.code.toByte()
+        header[11] =
+            'E'.code.toByte()
+
+        header[12] =
+            'f'.code.toByte()
+
+        header[13] =
+            'm'.code.toByte()
+
+        header[14] =
+            't'.code.toByte()
+
+        header[15] =
+            ' '.code.toByte()
+
+        writeIntLE(
+            header,
+            16,
+            16
+        )
+
+        writeShortLE(
+            header,
+            20,
+            1
+        )
+
+        writeShortLE(
+            header,
+            22,
+            1
+        )
+
+        writeIntLE(
+            header,
+            24,
+            sampleRate
+        )
+
+        writeIntLE(
+            header,
+            28,
+            byteRate
+        )
+
+        writeShortLE(
+            header,
+            32,
+            2
+        )
+
+        writeShortLE(
+            header,
+            34,
+            16
+        )
+
+        header[36] =
+            'd'.code.toByte()
+
+        header[37] =
+            'a'.code.toByte()
+
+        header[38] =
+            't'.code.toByte()
+
+        header[39] =
+            'a'.code.toByte()
 
         writeIntLE(
             header,
@@ -576,7 +805,9 @@ class MainActivity : AppCompatActivity() {
 
         var index = 0
 
-        while (index < samples.size) {
+        while (
+            index < samples.size
+        ) {
 
             val count =
                 minOf(
@@ -587,17 +818,23 @@ class MainActivity : AppCompatActivity() {
             for (i in 0 until count) {
 
                 val value =
-                    (samples[index + i]
-                        .coerceIn(-1f, 1f) * 32767f)
+                    (
+                        samples[index + i]
+                            .coerceIn(-1f, 1f) *
+                                32767f
+                        )
                         .toInt()
                         .toShort()
 
                 buffer[i * 2] =
-                    (value.toInt() and 0xFF).toByte()
+                    (
+                        value.toInt() and 0xFF
+                    ).toByte()
 
                 buffer[i * 2 + 1] =
-                    ((value.toInt() shr 8) and 0xFF)
-                        .toByte()
+                    (
+                        (value.toInt() shr 8) and 0xFF
+                    ).toByte()
             }
 
             output.write(
@@ -689,15 +926,14 @@ class MainActivity : AppCompatActivity() {
 
         stopAudio()
 
-        executor.execute {
-
-            try {
-                tts?.release()
-            } catch (_: Exception) {
-            }
+        try {
+            tts?.release()
+        } catch (_: Throwable) {
         }
 
-        executor.shutdown()
+        tts = null
+
+        executor.shutdownNow()
 
         super.onDestroy()
     }
