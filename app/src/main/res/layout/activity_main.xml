@@ -54,7 +54,6 @@
                 android:gravity="top|start"
                 android:hint="Type something to speak..."
                 android:inputType="textMultiLine|textCapSentences"
-                android:maxLength="5000"
                 android:textColor="@color/text_primary"
                 android:textColorHint="@color/text_secondary"
                 android:textSize="16sp" />
